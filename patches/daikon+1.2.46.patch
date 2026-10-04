@@ -1,0 +1,31 @@
+diff --git a/node_modules/daikon/lib/jpeg-baseline.js b/node_modules/daikon/lib/jpeg-baseline.js
+index 5229620..003e1b8 100644
+--- a/node_modules/daikon/lib/jpeg-baseline.js
++++ b/node_modules/daikon/lib/jpeg-baseline.js
+@@ -510,9 +510,11 @@ var JpegImage = (function jpegImage() {
+         for (i = 0; i < 64; ++i) {
+             var index = blockBufferOffset + i;
+             var q = p[i];
+-            q = (q <= -2056 / component.bitConversion) ? 0 :
+-                (q >= 2024 / component.bitConversion) ? 255 / component.bitConversion :
+-                (q + 2056 / component.bitConversion) >> 4;
++            // level shift for the frame's sample precision (8 or 12 bit); the IDCT output carries 4 fractional bits.
++            // Upstream scaled the 8-bit constants, which biased 12-bit images by +15.
++            var maxSample = Math.round(255 / component.bitConversion);
++            q = (q + (maxSample + 1) * 8 + 8) >> 4;
++            q = q < 0 ? 0 : q > maxSample ? maxSample : q;
+             component.blockData[index] = q;
+         }
+     }
+@@ -772,6 +774,11 @@ var JpegImage = (function jpegImage() {
+                         offset += processed;
+                         break;
+                     default:
++                        if (fileMarker === 0xFFFF) {
++                            // fill byte before a marker (allowed by ITU T.81 B.1.1.2): skip one byte
++                            offset -= 1;
++                            break;
++                        }
+                         if (data[offset - 3] == 0xFF &&
+                             data[offset - 2] >= 0xC0 && data[offset - 2] <= 0xFE) {
+                             // could be incorrect encoding -- last 0xFF byte of the previous
