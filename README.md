@@ -10,7 +10,7 @@ Aplicação web para **estudo de casos de cirurgia bucomaxilofacial**: abre tomo
 | --- | --- |
 | **Cortes** | Axial, coronal e sagital sincronizados; janelas Osso, Partes moles, Seios/ar e Dentes/metal; ajuste de janela por arraste; régua em mm; leitura de densidade (HU). |
 | **3D** | Superfície óssea (malha) ou renderização volumétrica (Osso, Osso + pele, Pele); vistas padrão; corte do modelo por plano; **medidas no modelo** (distância, ângulo, pontos de referência); **metal** (placas, parafusos, pinos, restaurações) separado do osso em dourado, com a lista das peças e suas medidas; **segmentação** automática (crânio/face, mandíbula, dentes, metal) e **editor de estruturas** (separar por toque, cortar pelo plano) para maxila, zigomáticos, ossos nasais etc., com STL de cada uma; exportação **STL** e PNG. |
-| **Panorâmica** | Toque pontos ao longo do arco no axial para gerar a **panorâmica reconstruída** (média ou MIP, espessura ajustável) e **cortes transversais** com régua para altura e espessura óssea. |
+| **Panorâmica** | Toque pontos ao longo do arco no axial para gerar a **panorâmica reconstruída** (média ou MIP, espessura ajustável) e **cortes transversais** com régua para altura e espessura óssea; **traçado do canal mandibular** (direito/esquerdo) nos transversais, mostrado na panorâmica, no axial e em 3D. |
 | **Imagem 2D** | Para radiografias, fotos do negatoscópio e capturas de tela: redução de ruído, contraste local (CLAHE), nitidez, brilho/contraste/gama, negativo, comparação antes/depois e download. |
 | **Análise IA** | Descrição educacional do caso pelo Claude a partir de imagens **anonimizadas** (cortes, 3D, panorâmica) e dados técnicos, com prévia exata do que é enviado. No claude.ai usa a conta do usuário; no site próprio pede uma chave de API da Anthropic. |
 
@@ -29,6 +29,14 @@ Ao abrir o exame, o app analisa **todas as séries** (orientação, espaçamento
 - **Uma única série espessa**: interpolação baseada em forma, com aviso.
 
 Os ajustes também saem do exame: o limiar ósseo (HU calibrado ou histograma em CBCT), a interpolação, a suavização e o limiar local de **paredes finas**. Este último fica a meio caminho entre as partes moles daquele exame e o osso, e só vale junto de osso confirmado, para manter assoalho de órbita, paredes de seio e septo sem trazer ruído. Cada escolha aparece com o motivo.
+
+### Partes moles, vasos, nervos e glândulas
+
+- **Filtro de tecidos** (modo Volume): pele, gordura, glândulas (aproximado), músculos, vasos com contraste, osso, dentes e metal, cada um com faixa de densidade, cor e opacidade; predefinições Osso, Osso + pele, Partes moles, Vasos e Pele.
+- **Seios e vias aéreas** são segmentados (ar interno à cabeça, corte a corte), com o volume de cada espaço aéreo.
+- **Vasos** só se separam em exame **com contraste** (etiqueta DICOM ou descrição como "C/C"); nesse caso o limiar ósseo sobe para 350 HU e os vasos realçados viram uma estrutura própria (aproximada: artérias e veias não são diferenciadas).
+- **Nervos não aparecem na tomografia.** O canal mandibular, por onde passa o nervo alveolar inferior, é traçado manualmente na panorâmica.
+- Qualquer estrutura pode ficar **transparente** para ver o que está dentro (canal, raízes, seios).
 
 ### Privacidade (LGPD)
 

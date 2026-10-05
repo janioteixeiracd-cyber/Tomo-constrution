@@ -8,13 +8,14 @@ import { keepLargeComponents } from './core/components';
 import { reconstruct } from './core/resample';
 import { labelField, splitByPlane, splitBySeed } from './core/segedit';
 import { segmentBone } from './core/segment';
+import { segmentAirways, segmentVessels, type Region } from './core/softseg';
 import type { BuiltVolume, ReconOptions, ReconResult, Vec3 } from './core/types';
 
 export type WorkerRequest =
   | { id: number; type: 'parse'; files: InputFile[] }
   | { id: number; type: 'build'; seriesIds: string[]; effective?: Vec3; effectiveGap?: number; maxVoxels?: number }
   | { id: number; type: 'recon'; options: ReconOptions; maxVoxels: number; smoothIterations: number; calibratedHU: boolean }
-  | { id: number; type: 'segment'; calibratedHU: boolean; smoothIterations: number }
+  | { id: number; type: 'segment'; calibratedHU: boolean; smoothIterations: number; contrast: boolean }
   | {
       id: number;
       type: 'split';
@@ -26,7 +27,7 @@ export type WorkerRequest =
       smoothIterations: number;
     };
 
-type Base = 'bone' | 'teeth' | 'metal';
+type Base = 'bone' | 'teeth' | 'metal' | 'air' | 'vessel';
 
 export interface LayerOut {
   id: number;
@@ -44,7 +45,13 @@ let lastRecon: {
   metalMask: Uint8Array | null;
   metalBase: Float32Array | null;
 } | null = null;
-let seg: { labels: Uint8Array; meta: Map<number, { name: string; base: Base }>; teethBase: Float32Array; nextId: number } | null = null;
+let seg: {
+  labels: Uint8Array;
+  meta: Map<number, { name: string; base: Base }>;
+  teethBase: Float32Array;
+  extraBase: Map<Base, Float32Array>;
+  nextId: number;
+} | null = null;
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 const progress = (id: number, message: string) => ctx.postMessage({ id, progress: message });
@@ -53,13 +60,15 @@ function baseField(base: Base): Float32Array {
   if (!lastRecon) throw new Error('Reconstrua o 3D primeiro.');
   if (base === 'metal' && lastRecon.metalBase) return lastRecon.metalBase;
   if (base === 'teeth' && seg) return seg.teethBase;
+  const extra = seg?.extraBase.get(base);
+  if (extra) return extra;
   return lastRecon.rec.surfaceField.data;
 }
 
 function layerOut(id: number, smoothIterations: number): LayerOut {
   const meta = seg!.meta.get(id)!;
   const field = labelField(seg!.labels, id, baseField(meta.base));
-  const mesh = extractSurface({ ...lastRecon!.rec.surfaceField, data: field }, meta.base === 'metal' ? 4 : smoothIterations);
+  const mesh = extractSurface({ ...lastRecon!.rec.surfaceField, data: field }, meta.base === 'metal' || meta.base === 'vessel' ? 6 : smoothIterations);
   let count = 0;
   for (const l of seg!.labels) if (l === id) count++;
   const sp = lastRecon!.rec.intensity.spacing;
@@ -186,21 +195,69 @@ ctx.onmessage = (ev: MessageEvent<WorkerRequest>) => {
       seg = {
         labels: result.labels,
         teethBase,
+        extraBase: new Map(),
         nextId: 10,
         meta: new Map([
           [1, { name: 'Crânio e face', base: 'bone' as Base }],
           [2, { name: 'Mandíbula', base: 'bone' as Base }],
           [3, { name: 'Dentes', base: 'teeth' as Base }],
           [4, { name: 'Metal (placas, parafusos, restaurações)', base: 'metal' as Base }],
+          [5, { name: 'Seios e vias aéreas', base: 'air' as Base }],
+          [6, { name: 'Vasos (contraste)', base: 'vessel' as Base }],
         ]),
       };
+      const notes = [...result.notes];
+      const describe = (r: Region[], max: number) =>
+        r
+          .slice(0, max)
+          .map((x) => `${(x.volume / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} cm³ (${x.location})`)
+          .join('; ');
+
+      progress(req.id, 'Separando seios paranasais e vias aéreas…');
+      const air = segmentAirways(lastRecon.rec.intensity);
+      let airCount = 0;
+      for (let i = 0; i < hu.length; i++)
+        if (air.mask[i] && !seg.labels[i]) {
+          seg.labels[i] = 5;
+          airCount++;
+        }
+      if (airCount) {
+        const airBase = new Float32Array(hu.length);
+        for (let i = 0; i < hu.length; i++) airBase[i] = -400 - hu[i];
+        seg.extraBase.set('air', airBase);
+        notes.push(`Espaços aéreos (seios, cavidade nasal, faringe): ${describe(air.regions, 6)}. Use "Separar por toque" para nomear cada seio.`);
+      }
+
+      if (req.contrast) {
+        progress(req.id, 'Procurando vasos realçados pelo contraste…');
+        const vessels = segmentVessels(lastRecon.rec.intensity);
+        let vCount = 0;
+        for (let i = 0; i < hu.length; i++)
+          if (vessels.mask[i] && !seg.labels[i]) {
+            seg.labels[i] = 6;
+            vCount++;
+          }
+        if (vCount) {
+          const vBase = new Float32Array(hu.length);
+          for (let i = 0; i < hu.length; i++) vBase[i] = hu[i] - 150;
+          seg.extraBase.set('vessel', vBase);
+          notes.push(
+            `Vasos com contraste: ${vessels.regions.length} grupo(s), maiores: ${describe(vessels.regions, 4)}. Aproximado: mucosa e glândulas muito realçadas podem entrar; artérias e veias não são diferenciadas.`,
+          );
+        } else notes.push('Exame marcado com contraste, mas nenhum vaso realçado foi encontrado fora do osso.');
+      } else {
+        notes.push('Vasos não segmentados: o exame não tem contraste identificado (sem contraste, sangue e músculo têm a mesma densidade).');
+      }
+
       const layers: LayerOut[] = [];
-      for (const s of result.stats) {
-        const id = { cranio: 1, mandibula: 2, dentes: 3, metal: 4 }[s.key];
+      const present = new Set<number>();
+      for (const l of seg.labels) present.add(l);
+      for (const id of [1, 2, 3, 4, 5, 6]) {
+        if (!present.has(id)) continue;
         progress(req.id, `Gerando superfície: ${seg.meta.get(id)!.name}…`);
         layers.push(layerOut(id, req.smoothIterations));
       }
-      ctx.postMessage({ id: req.id, result: { layers, notes: result.notes } }, transferOf(layers));
+      ctx.postMessage({ id: req.id, result: { layers, notes } }, transferOf(layers));
     } else if (req.type === 'split') {
       if (!lastRecon || !seg) throw new Error('Segmente as estruturas primeiro.');
       const g = lastRecon.rec.intensity;

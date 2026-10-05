@@ -1,6 +1,8 @@
 import { fmt } from '../core/math';
 import { buildArch, crossSection, panoramic, type ArchCurve, type PanoImage, type Pt } from '../core/panoramic';
-import type { Volume } from '../core/types';
+import type { Vec3, Volume } from '../core/types';
+
+export type CanalSide = 'direito' | 'esquerdo';
 import { HuCanvas } from './hu-canvas';
 
 const WINDOWS = { osso: { center: 600, width: 3000 }, dentes: { center: 1200, width: 3500 } };
@@ -17,6 +19,11 @@ export class PanoPanel {
   private panoImg: PanoImage | null = null;
   private crossCol = -1;
   private ruler: { a: [number, number]; b: [number, number] } | null = null;
+  /** pontos do canal mandibular em índices contínuos do volume (x, y, z) */
+  private canals: Record<CanalSide, Vec3[]> = { direito: [], esquerdo: [] };
+  private tracing: CanalSide | null = null;
+  /** avisa quem desenha o 3D: pontos do canal em coordenadas do paciente (mm) */
+  onCanalChange: (side: CanalSide, points: Vec3[]) => void = () => {};
   private dragIndex = -1;
   private pending = 0;
   private window = WINDOWS.osso;
@@ -36,10 +43,33 @@ export class PanoPanel {
     this.pano.canvas.addEventListener('pointerdown', (e) => this.pickColumn(e));
     this.pano.canvas.addEventListener('pointermove', (e) => e.buttons && this.pickColumn(e));
     this.cross.canvas.addEventListener('pointerdown', (e) => {
+      if (this.tracing) {
+        this.addCanalPoint(this.cross.toImage(e));
+        return;
+      }
       this.cross.canvas.setPointerCapture(e.pointerId);
       const p = this.cross.toImage(e);
       this.ruler = { a: p, b: p };
       this.drawCross();
+    });
+    const traceSel = root.querySelector<HTMLSelectElement>('#canal-side')!;
+    traceSel.addEventListener('change', () => {
+      this.tracing = (traceSel.value || null) as CanalSide | null;
+      this.ruler = null;
+      this.redraw();
+    });
+    root.querySelector('#canal-undo')!.addEventListener('click', () => {
+      const side = this.tracing ?? (this.canals.direito.length ? 'direito' : 'esquerdo');
+      this.canals[side].pop();
+      this.emitCanal(side);
+      this.redraw();
+    });
+    root.querySelector('#canal-clear')!.addEventListener('click', () => {
+      for (const side of ['direito', 'esquerdo'] as CanalSide[]) {
+        this.canals[side] = [];
+        this.emitCanal(side);
+      }
+      this.redraw();
     });
     this.cross.canvas.addEventListener('pointermove', (e) => {
       if (!this.ruler || !e.buttons) return;
@@ -68,6 +98,9 @@ export class PanoPanel {
 
   setVolume(vol: Volume) {
     this.vol = vol;
+    this.canals = { direito: [], esquerdo: [] };
+    this.emitCanal('direito');
+    this.emitCanal('esquerdo');
     this.control = [];
     this.arch = null;
     this.panoImg = null;
@@ -168,6 +201,7 @@ export class PanoPanel {
       ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2);
       ctx.fill();
     }
+    this.drawCanalOn('axial');
     this.axial.text([
       `Axial ${this.slice + 1}/${this.vol.dims[2]}`,
       this.control.length < 3 ? `Toque ${3 - this.control.length}+ ponto(s) ao longo do arco, de um lado ao outro` : `${this.control.length} pontos · arraste para ajustar`,
@@ -249,6 +283,7 @@ export class PanoPanel {
     ctx.fillText('R', 8 * L.dpr, 30 * L.dpr);
     ctx.textAlign = 'right';
     ctx.fillText('L', this.pano.canvas.width - 8 * L.dpr, 30 * L.dpr);
+    this.drawCanalOn('pano');
     this.pano.text([`Arco ${fmt(this.arch!.length, 0)} mm · toque para escolher o corte transversal`]);
   }
 
@@ -294,10 +329,113 @@ export class PanoPanel {
       const mm = Math.hypot(b[0] - a[0], b[1] - a[1]) * img.pw;
       this.cross.label(`${fmt(mm, 1)} mm`, bx + 8 * L.dpr, by, '#ffd400');
     }
+    this.drawCanalOn('cross');
     const pos = this.crossCol * this.arch.step;
-    const lines = [`Transversal a ${fmt(pos, 0)} mm do início do arco`, 'Arraste para medir altura/espessura óssea'];
+    const lines = [
+      `Transversal a ${fmt(pos, 0)} mm do início do arco`,
+      this.tracing ? `Toque no canal mandibular (${this.tracing}); depois avance na panorâmica` : 'Arraste para medir altura/espessura óssea',
+    ];
     if (this.vol && this.vol.spacing[2] > 1.5) lines.push(`Atenção: cortes de ${fmt(this.vol.spacing[2])} mm — altura com baixa precisão`);
     this.cross.text(lines);
+  }
+
+  // ---------- canal mandibular ----------
+
+  /** índice contínuo do volume → coordenadas do paciente (mm) */
+  private toWorld(p: Vec3): Vec3 {
+    const v = this.vol!;
+    const d = v.direction;
+    const [sx, sy, sz] = v.spacing;
+    return [0, 1, 2].map((a) => v.origin[a] + d[a] * p[0] * sx + d[3 + a] * p[1] * sy + d[6 + a] * p[2] * sz) as Vec3;
+  }
+
+  /** linha da imagem reformatada ↔ índice z (mesma convenção de panoramic.ts: superior em cima) */
+  private zToRow(z: number, height: number) {
+    const nz = this.vol!.dims[2];
+    const zi = this.vol!.direction[8] >= 0 ? nz - 1 - z : z;
+    return nz > 1 ? (zi / (nz - 1)) * (height - 1) : 0;
+  }
+
+  private rowToZ(row: number, height: number) {
+    const nz = this.vol!.dims[2];
+    const zi = height > 1 ? (row / (height - 1)) * (nz - 1) : 0;
+    return this.vol!.direction[8] >= 0 ? nz - 1 - zi : zi;
+  }
+
+  private addCanalPoint([c, row]: [number, number]) {
+    const img = this.cross.image;
+    if (!img || !this.arch || !this.vol || !this.tracing) return;
+    const i = this.crossCol;
+    const [px, py] = this.arch.points[i];
+    const [nx, ny] = this.arch.normals[i];
+    const o = -40 / 2 + c * img.pw;
+    const p: Vec3 = [px + (nx * o) / this.vol.spacing[0], py + (ny * o) / this.vol.spacing[1], this.rowToZ(row, img.height)];
+    const list = this.canals[this.tracing];
+    list.push(p);
+    // mantém a ordem ao longo do arco (pela coluna da panorâmica mais próxima)
+    list.sort((a, b) => this.nearestCol(a) - this.nearestCol(b));
+    this.emitCanal(this.tracing);
+    this.redraw();
+  }
+
+  private nearestCol(p: Vec3) {
+    if (!this.arch) return 0;
+    let best = 0;
+    let bd = Infinity;
+    this.arch.points.forEach((q, i) => {
+      const d = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    return best;
+  }
+
+  private emitCanal(side: CanalSide) {
+    this.onCanalChange(side, this.vol ? this.canals[side].map((p) => this.toWorld(p)) : []);
+  }
+
+  private drawCanalOn(view: 'pano' | 'axial' | 'cross') {
+    if (!this.vol) return;
+    const colors: Record<CanalSide, string> = { direito: '#ff4d6d', esquerdo: '#ff9f1c' };
+    for (const side of ['direito', 'esquerdo'] as CanalSide[]) {
+      const pts = this.canals[side];
+      if (!pts.length) continue;
+      const target = view === 'pano' ? this.pano : view === 'axial' ? this.axial : this.cross;
+      const ctx = target.ctx;
+      const dpr = target.layout.dpr;
+      ctx.strokeStyle = colors[side];
+      ctx.fillStyle = colors[side];
+      ctx.lineWidth = 2 * dpr;
+      const xy = pts
+        .map((p) => {
+          if (view === 'axial') return target.toCanvas(p[0], p[1]);
+          if (view === 'pano') {
+            if (!this.panoImg) return null;
+            return target.toCanvas(this.nearestCol(p), this.zToRow(p[2], this.panoImg.height));
+          }
+          // corte transversal: só os pontos marcados neste corte (ou vizinho)
+          const img = this.cross.image;
+          if (!img || Math.abs(this.nearestCol(p) - this.crossCol) > 2 || !this.arch) return null;
+          const [ax, ay] = this.arch.points[this.crossCol];
+          const [nx, ny] = this.arch.normals[this.crossCol];
+          const o = (p[0] - ax) * this.vol!.spacing[0] * nx + (p[1] - ay) * this.vol!.spacing[1] * ny;
+          return target.toCanvas((o + 20) / img.pw, this.zToRow(p[2], img.height));
+        })
+        .filter((v): v is [number, number] => !!v);
+      if (view !== 'cross' && xy.length > 1) {
+        ctx.beginPath();
+        xy.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.stroke();
+      }
+      for (const [x, y] of xy) {
+        ctx.beginPath();
+        ctx.arc(x, y, (view === 'cross' ? 5 : 3) * dpr, 0, Math.PI * 2);
+        if (view === 'cross') ctx.stroke();
+        else ctx.fill();
+      }
+    }
   }
 
   snapshotImages(): { label: string; canvas: HTMLCanvasElement }[] {

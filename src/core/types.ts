@@ -48,6 +48,8 @@ export interface StudyInfo {
   manufacturer: string;
   model: string;
   kvp: string;
+  /** exame com contraste intravenoso (etiqueta DICOM ou descrição da série) */
+  contrast: boolean;
 }
 
 export type QualityLevel = 'boa' | 'moderada' | 'limitada';

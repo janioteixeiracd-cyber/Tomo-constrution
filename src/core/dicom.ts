@@ -93,6 +93,14 @@ export function parseFiles(files: InputFile[]): ParseResult {
   return { series, skipped };
 }
 
+/** Contraste: etiqueta Contrast/Bolus Agent (0018,0010) ou descrição como "C/C", "com contraste", "C+". */
+export function hasContrast(img: DaikonImage): boolean {
+  const agent = tagString(img, 0x0018, 0x0010);
+  if (agent && !/^(none|nenhum|sem|no|n\/a)$/i.test(agent)) return true;
+  const desc = `${img.getSeriesDescription() ?? ''} ${tagString(img, 0x0008, 0x1030)}`;
+  return /\bc\s*\/\s*c\b|com\s+contraste|\bcontraste\b|\bc\+|\bpos[- ]?contraste|\bangio/i.test(desc) && !/sem\s+contraste|\bs\s*\/\s*c\b/i.test(desc);
+}
+
 export function studyInfo(img: DaikonImage): StudyInfo {
   const name = String(img.getPatientName() ?? '').replace(/\^/g, ' ').trim();
   const date = String(img.getStudyDate() ?? '');
@@ -103,6 +111,7 @@ export function studyInfo(img: DaikonImage): StudyInfo {
     manufacturer: tagString(img, 0x0008, 0x0070),
     model: tagString(img, 0x0008, 0x1090),
     kvp: tagString(img, 0x0018, 0x0060),
+    contrast: hasContrast(img),
   };
 }
 

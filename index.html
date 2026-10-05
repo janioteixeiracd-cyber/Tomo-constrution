@@ -102,6 +102,8 @@
           <div class="seg" id="vr-presets" role="group" aria-label="Predefinição" hidden>
             <button data-preset="osso" class="on">Osso</button>
             <button data-preset="osso-pele">Osso + pele</button>
+            <button data-preset="partes-moles">Partes moles</button>
+            <button data-preset="vasos">Vasos</button>
             <button data-preset="pele">Pele</button>
           </div>
           <select id="camera-view" aria-label="Vista">
@@ -206,6 +208,11 @@
               <p class="hint" id="seg-hint">Separar por toque: solta a parte tocada pelas ligações ósseas mais finas. Cortar pelo plano: use "Corte do modelo" para posicionar o plano e toque na parte visível que vira a nova estrutura.</p>
             </div>
           </section>
+          <section class="card" id="tissue-card" hidden>
+            <h2>Filtro de tecidos</h2>
+            <p class="hint" id="tissue-note"></p>
+            <ul id="tissue-list" class="layers tissues"></ul>
+          </section>
           <section class="card" id="metal-card" hidden>
             <h2>Material metálico</h2>
             <p class="hint" id="metal-summary"></p>
@@ -229,6 +236,15 @@
             <option value="media">Média (aspecto radiográfico)</option>
             <option value="mip">MIP (realça dentes e osso)</option>
           </select>
+          <label class="inline">Traçar canal mandibular
+            <select id="canal-side">
+              <option value="">desligado</option>
+              <option value="direito">lado direito</option>
+              <option value="esquerdo">lado esquerdo</option>
+            </select>
+          </label>
+          <button id="canal-undo" class="ghost">Desfazer ponto do canal</button>
+          <button id="canal-clear" class="ghost">Apagar canais</button>
           <div class="seg" role="group" aria-label="Janela">
             <button data-pano-wl="osso" class="on">Osso</button>
             <button data-pano-wl="dentes">Dentes</button>

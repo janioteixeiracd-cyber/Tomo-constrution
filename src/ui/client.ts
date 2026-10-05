@@ -12,7 +12,7 @@ export interface ParseResponse {
 export interface LayerOut {
   id: number;
   name: string;
-  base: 'bone' | 'teeth' | 'metal';
+  base: 'bone' | 'teeth' | 'metal' | 'air' | 'vessel';
   mesh: Mesh;
   volumeMm3: number;
 }
@@ -75,8 +75,8 @@ export class ProcessingClient {
     return this.call<BuiltVolume>({ type: 'build', seriesIds, ...extra }, onProgress);
   }
 
-  segment(calibratedHU: boolean, smoothIterations: number, onProgress?: (m: string) => void) {
-    return this.call<SegmentResponse>({ type: 'segment', calibratedHU, smoothIterations }, onProgress);
+  segment(calibratedHU: boolean, smoothIterations: number, contrast: boolean, onProgress?: (m: string) => void) {
+    return this.call<SegmentResponse>({ type: 'segment', calibratedHU, smoothIterations, contrast }, onProgress);
   }
 
   recon(options: ReconOptions, maxVoxels: number, smoothIterations: number, calibratedHU: boolean, onProgress?: (m: string) => void) {

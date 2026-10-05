@@ -8,7 +8,8 @@ import { ProcessingClient, type LayerOut, type ReconResponse } from './ui/client
 import { EnhancePanel } from './ui/enhance-ui';
 import { MprState, MprView, type Tool } from './ui/mpr';
 import { dataUrlToBlob, saveFile } from './ui/save';
-import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, SurfaceLayer, View3D, VolumePreset } from './ui/view3d';
+import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, SurfaceLayer, View3D } from './ui/view3d';
+import { defaultTissues, sampleTransfer, TISSUE_PRESETS, type TissueClass } from './ui/tissues';
 import { PanoPanel } from './ui/pano-ui';
 import { planReconstruction, type ReconPlan } from './core/plan';
 import { canvasToJpeg, claudeHostSample, describeCase, describeError, type CaseImage } from './ui/ai';
@@ -29,6 +30,12 @@ let segLayers: SurfaceLayer[] | null = null;
 let plan: ReconPlan | null = null;
 let summariesById = new Map<string, SeriesSummary>();
 const pano = new PanoPanel($('#tab-pano'));
+const canalPoints: Record<string, Vec3[]> = {};
+pano.onCanalChange = async (side, points) => {
+  canalPoints[side] = points;
+  if (!view3d && !points.length) return;
+  (await ensureView3d()).setCanal(`canal-${side}`, points, side === 'direito' ? [1, 0.3, 0.43] : [1, 0.62, 0.11]);
+};
 
 // ---------- abas ----------
 function showTab(name: string) {
@@ -179,6 +186,7 @@ async function loadSeries(ids: string[], fused = false) {
   setupMpr(built);
   pano.setVolume(built.volume);
   setupReconDefaults(built);
+  tissues = [];
   enableAi();
   runRecon();
 }
@@ -346,7 +354,8 @@ else if (((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4
 
 function setupReconDefaults(b: BuiltVolume) {
   const cbct = isCbctVendor(b.study.manufacturer);
-  const t = suggestThreshold(b.volume, cbct);
+  // com contraste, vasos realçados chegam a ~200–400 HU: o limiar do osso sobe para não incluí-los
+  const t = b.study.contrast && !cbct ? Math.max(350, suggestThreshold(b.volume, cbct)) : suggestThreshold(b.volume, cbct);
   thresholdInput.min = String(Math.min(-200, t - 500));
   thresholdInput.max = String(Math.max(1500, t + 1500));
   thresholdInput.value = String(t);
@@ -359,7 +368,9 @@ function setupReconDefaults(b: BuiltVolume) {
   const settings = [
     cbct
       ? `Limiar ósseo ${t}: calculado pelo histograma deste exame (CBCT não usa HU calibrado).`
-      : `Limiar ósseo ${t} HU: TC calibrada (ar ≈ −1000 HU); separa osso cortical e medular das partes moles.`,
+      : b.study.contrast
+        ? `Limiar ósseo ${t} HU: exame com contraste, acima da densidade dos vasos realçados para eles não virarem "osso".`
+        : `Limiar ósseo ${t} HU: TC calibrada (ar ≈ −1000 HU); separa osso cortical e medular das partes moles.`,
     b.fusion
       ? `Volume fundido em grade de ${fmt(b.volume.spacing[0])} mm; interpolação cúbica e suavização leve (${smoothingInput.value} mm) para unir as séries sem apagar detalhe.`
       : sz > 2
@@ -427,6 +438,8 @@ async function runRecon() {
     busy.querySelector('span')!.textContent = 'Desenhando…';
     const v = await ensureView3d();
     v.setVolume(res.intensity, opts.threshold);
+    if (!tissues.length) setupTissues(built);
+    else applyTissues();
     lastMesh = res.mesh;
     layerVolumes = new Map();
     segLayers = [{ key: 'osso', name: 'Osso', color: COLORS.osso, mesh: res.mesh, visible: true }];
@@ -472,7 +485,11 @@ const markDirty = () => {
 };
 thresholdInput.addEventListener('input', () => {
   updateOutputs();
-  view3d?.setThreshold(Number(thresholdInput.value));
+  const bone = tissues.find((t) => t.key === 'osso');
+  if (bone && built) {
+    bone.lo = built.study.contrast ? Math.max(Number(thresholdInput.value), 450) : Number(thresholdInput.value);
+    applyTissues();
+  } else view3d?.setThreshold(Number(thresholdInput.value));
   markDirty();
 });
 smoothingInput.addEventListener('input', () => {
@@ -486,13 +503,81 @@ $$('[data-mode]').forEach((btn) =>
     renderMode = btn.dataset.mode as RenderMode;
     $$('[data-mode]').forEach((b) => b.classList.toggle('on', b === btn));
     $('#vr-presets').hidden = renderMode !== 'volume';
+    $('#tissue-card').hidden = renderMode !== 'volume' || !tissues.length;
     view3d?.setMode(renderMode);
   }),
 );
+
+// ---------- filtro de tecidos (modo Volume) ----------
+let tissues: TissueClass[] = [];
+
+function setupTissues(b: BuiltVolume) {
+  tissues = defaultTissues(Number(thresholdInput.value), b.study.contrast);
+  const cbct = isCbctVendor(b.study.manufacturer);
+  $('#tissue-note').textContent =
+    (b.study.contrast
+      ? 'Exame com contraste: vasos realçados aparecem em vermelho. '
+      : 'Exame sem contraste identificado: artérias e veias têm a mesma densidade dos músculos e não se separam. ') +
+    'Nervos não aparecem na tomografia; use a aba Panorâmica para traçar o canal mandibular.' +
+    (cbct ? ' CBCT: as faixas de partes moles não são confiáveis (valores não calibrados).' : '');
+  renderTissues();
+  applyTissues();
+}
+
+function applyTissues() {
+  view3d?.setTransfer(sampleTransfer(tissues));
+}
+
+function renderTissues() {
+  const ul = $('#tissue-list');
+  ul.innerHTML = '';
+  $('#tissue-card').hidden = renderMode !== 'volume' || !tissues.length;
+  for (const t of tissues) {
+    const li = document.createElement('li');
+    li.classList.toggle('off', !t.enabled);
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.id = `tissue-${t.key}`;
+    box.checked = t.enabled;
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = `rgb(${t.color.map((c) => Math.round(c * 255)).join(',')})`;
+    const label = document.createElement('label');
+    label.className = 'grow';
+    label.htmlFor = box.id;
+    label.innerHTML = '<span></span> <small></small>';
+    label.querySelector('span')!.textContent = t.name;
+    label.querySelector('small')!.textContent = `${t.lo} a ${t.hi} HU${t.note ? ` · ${t.note}` : ''}`;
+    const op = document.createElement('label');
+    op.className = 'opacity';
+    op.innerHTML = 'Opacidade <input type="range" min="0" max="1" step="0.01" />';
+    const range = op.querySelector('input')!;
+    range.id = `tissue-op-${t.key}`;
+    range.value = String(t.opacity);
+    range.disabled = !t.enabled;
+    box.addEventListener('change', () => {
+      t.enabled = box.checked;
+      li.classList.toggle('off', !t.enabled);
+      range.disabled = !t.enabled;
+      $$('[data-preset]').forEach((b) => b.classList.remove('on'));
+      applyTissues();
+    });
+    range.addEventListener('input', () => {
+      t.opacity = Number(range.value);
+      applyTissues();
+    });
+    li.append(box, sw, label, op);
+    ul.append(li);
+  }
+}
+
 $$('[data-preset]').forEach((btn) =>
   btn.addEventListener('click', () => {
     $$('[data-preset]').forEach((b) => b.classList.toggle('on', b === btn));
-    view3d?.setPreset(btn.dataset.preset as VolumePreset);
+    const keys = TISSUE_PRESETS[btn.dataset.preset!] ?? [];
+    for (const t of tissues) t.enabled = keys.includes(t.key);
+    renderTissues();
+    applyTissues();
   }),
 );
 $('#camera-view').addEventListener('change', (e) => view3d?.setCamera((e.target as HTMLSelectElement).value as CameraView));
@@ -603,7 +688,10 @@ const LABEL_COLORS: Record<number, readonly [number, number, number]> = {
   2: [0.55, 0.75, 0.95],
   3: [1, 0.98, 0.9],
   4: [1, 0.74, 0.18],
+  5: [0.55, 0.85, 0.98],
+  6: [0.95, 0.22, 0.25],
 };
+const LABEL_OPACITY: Record<number, number> = { 5: 0.55 };
 // cores das estruturas criadas pelo usuário (distintas entre si e do osso, dos dentes e do metal)
 const USER_COLORS: (readonly [number, number, number])[] = [
   [0.6, 0.83, 0.55],
@@ -622,7 +710,7 @@ let segmented = false;
 function applyLayers(list: LayerOut[]) {
   const incoming = list.map((l) => {
     layerVolumes.set(String(l.id), l.volumeMm3);
-    return { key: String(l.id), name: l.name, color: colorFor(l.id), mesh: l.mesh, visible: true };
+    return { key: String(l.id), name: l.name, color: colorFor(l.id), mesh: l.mesh, visible: true, opacity: LABEL_OPACITY[l.id] };
   });
   const byKey = new Map((segLayers ?? []).map((l) => [l.key, l]));
   for (const l of incoming) {
@@ -640,7 +728,7 @@ $('#segment-btn').addEventListener('click', async () => {
   const btn = $<HTMLButtonElement>('#segment-btn');
   btn.disabled = true;
   try {
-    const res = await client.segment(!isCbctVendor(built.study.manufacturer), Number(smoothingInput.value) > 0 ? 12 : 0, (m) => {
+    const res = await client.segment(!isCbctVendor(built.study.manufacturer), Number(smoothingInput.value) > 0 ? 12 : 0, built.study.contrast, (m) => {
       busy.querySelector('span')!.textContent = m;
     });
     segLayers = [];
@@ -700,7 +788,18 @@ function renderLayers() {
     stl.addEventListener('click', async () =>
       reportSave(await saveFile(`${baseName()}-${fileKey}.stl`, new Blob([meshToStl(layer.mesh)], { type: 'model/stl' }))),
     );
-    li.append(box, sw, label, stl);
+    const glass = document.createElement('button');
+    glass.className = 'ghost small';
+    const translucent = (layer.opacity ?? 1) < 0.9;
+    glass.textContent = translucent ? 'Opaco' : 'Transparente';
+    glass.title = 'Deixa a estrutura translúcida para ver o que está dentro (canal, raízes, seios)';
+    glass.addEventListener('click', () => {
+      const op = (layer.opacity ?? 1) < 0.9 ? 1 : 0.3;
+      layer.opacity = op;
+      view3d?.setLayerOpacity(layer.key, op);
+      glass.textContent = op < 0.9 ? 'Opaco' : 'Transparente';
+    });
+    li.append(box, sw, label, glass, stl);
     ul.append(li);
   }
 }

@@ -10,6 +10,7 @@ import type vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderW
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
 import vtkLineSource from '@kitware/vtk.js/Filters/Sources/LineSource';
 import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
+import vtkTubeFilter from '@kitware/vtk.js/Filters/General/TubeFilter';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkCellPicker from '@kitware/vtk.js/Rendering/Core/CellPicker';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
@@ -19,6 +20,7 @@ import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
 import { fmt } from '../core/math';
 import type { Mesh } from '../core/mesh';
 import type { Vec3, Volume } from '../core/types';
+import type { TransferSample } from './tissues';
 
 export type RenderMode = 'superficie' | 'volume';
 export type VolumePreset = 'osso' | 'osso-pele' | 'pele';
@@ -67,6 +69,7 @@ export class View3D {
   private pending: Vec3[] = [];
   private measurements: Measurement[] = [];
   private measureActors: ReturnType<typeof vtkActor.newInstance>[] = [];
+  private canalActors = new Map<string, ReturnType<typeof vtkActor.newInstance>>();
   private labels: HTMLDivElement;
   private nextId = 1;
   private landmarkCount = 0;
@@ -147,6 +150,14 @@ export class View3D {
     this.sync();
   }
 
+  setLayerOpacity(key: string, opacity: number) {
+    const l = this.layers.find((x) => x.layer.key === key);
+    if (!l) return;
+    l.layer.opacity = opacity;
+    l.actor.getProperty().setOpacity(opacity);
+    this.render();
+  }
+
   setLayerVisible(key: string, visible: boolean) {
     const l = this.layers.find((x) => x.layer.key === key);
     if (!l) return;
@@ -168,7 +179,7 @@ export class View3D {
     this.threshold = threshold;
     this.hasVolume = true;
     if (!this.bounds) this.bounds = image.getBounds();
-    this.applyPreset();
+    if (!this.customTransfer) this.applyPreset();
     this.sync();
   }
 
@@ -185,7 +196,25 @@ export class View3D {
 
   setThreshold(t: number) {
     this.threshold = t;
-    this.applyPreset();
+    if (!this.customTransfer) this.applyPreset();
+    this.render();
+  }
+
+  private customTransfer = false;
+
+  /** Função de transferência do filtro de tecidos (amostrada em HU). */
+  setTransfer(samples: TransferSample[]) {
+    const ctf = vtkColorTransferFunction.newInstance();
+    const otf = vtkPiecewiseFunction.newInstance();
+    for (const p of samples) {
+      ctf.addRGBPoint(p.hu, ...p.color);
+      otf.addPoint(p.hu, p.opacity);
+    }
+    const vp = this.volumeActor.getProperty();
+    vp.setRGBTransferFunction(0, ctf);
+    vp.setScalarOpacity(0, otf);
+    vp.setScalarOpacityUnitDistance(0, 1.2);
+    this.customTransfer = true;
     this.render();
   }
 
@@ -234,7 +263,33 @@ export class View3D {
     if (this.mode === 'superficie') for (const l of this.layers) this.renderer.addActor(l.actor);
     if (this.mode === 'volume' && this.hasVolume) this.renderer.addVolume(this.volumeActor);
     for (const a of this.measureActors) this.renderer.addActor(a);
+    for (const a of this.canalActors.values()) this.renderer.addActor(a);
     this.render();
+  }
+
+  /** Canal (ex.: mandibular) como tubo 3D passando pelos pontos marcados, em mm. */
+  setCanal(key: string, points: Vec3[], color: readonly [number, number, number], radiusMm = 1.2) {
+    const old = this.canalActors.get(key);
+    if (old) this.renderer.removeActor(old);
+    this.canalActors.delete(key);
+    if (points.length >= 2) {
+      const poly = vtkPolyData.newInstance();
+      poly.getPoints().setData(Float32Array.from(points.flat()), 3);
+      const line = new Uint32Array(points.length + 1);
+      line[0] = points.length;
+      for (let i = 0; i < points.length; i++) line[i + 1] = i;
+      poly.setLines(vtkCellArray.newInstance({ values: line }));
+      const tube = vtkTubeFilter.newInstance({ radius: radiusMm, numberOfSides: 16, capping: true });
+      tube.setInputData(poly);
+      const m = vtkMapper.newInstance();
+      m.setInputConnection(tube.getOutputPort());
+      const a = vtkActor.newInstance();
+      a.setMapper(m);
+      a.getProperty().setColor(...color);
+      a.getProperty().setAmbient(0.35);
+      this.canalActors.set(key, a);
+    }
+    this.sync();
   }
 
   private clip: { axis: ClipAxis; fraction: number; flip: boolean } = { axis: 'nenhum', fraction: 0.5, flip: false };
