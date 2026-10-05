@@ -946,8 +946,13 @@ claudeHostSample().then((h) => {
     note.textContent = `Usando o Claude da sua conta do claude.ai, sem chave de API (até ${h.maxImages} imagem(ns) por análise). Na primeira vez, o Claude pede sua autorização.`;
   } else {
     $<HTMLInputElement>('#ia-key').placeholder = 'opcional — sk-ant-…';
+    // Sem imagens neste aparelho: o caminho principal passa a ser o chat do Claude com a montagem.
+    const run = $<HTMLButtonElement>('#ia-run');
+    run.textContent = 'Gerar só com texto (sem imagens)';
+    run.classList.replace('primary', 'ghost');
+    $('#ia-chat').classList.replace('ghost', 'primary');
     note.textContent =
-      'Usando o Claude da sua conta do claude.ai, sem chave. Neste aparelho ele recebe só texto (dados técnicos e o seu contexto), sem as imagens. Para analisar as imagens, abra no computador ou informe uma chave de API.';
+      'Neste aparelho o app do Claude não deixa a página enviar imagens: "Gerar só com texto" manda apenas os dados técnicos e o seu contexto, e o Claude não vê os cortes nem o 3D. Para a análise das imagens use "Analisar no chat do Claude (com imagens)", abra no computador ou informe uma chave de API.';
   }
 });
 
