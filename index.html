@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0f16" />
     <title>TomoRecon 3D</title>
-    <script type="module" crossorigin src="./assets/index-C_uQGR7T.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DDFlg9Ed.css">
+    <script type="module" crossorigin src="./assets/index-CoGelC-b.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C2HgGFyi.css">
   </head>
   <body>
     <header class="topbar">
@@ -315,6 +315,7 @@
               <label class="switch"><input type="checkbox" data-ia-img="3d-lateral" checked /> 3D lateral</label>
               <label class="switch"><input type="checkbox" data-ia-img="pano" checked /> Panorâmica e transversal (se montadas)</label>
             </fieldset>
+            <label class="switch"><input type="checkbox" id="ia-auto" checked /> Ler o exame com IA automaticamente ao abrir</label>
             <label class="stack">Contexto clínico e pergunta (sem nome, CPF ou dados que identifiquem o paciente)
               <textarea id="ia-question" rows="4" placeholder="Ex.: paciente com queixa de dor em região de maxila direita; avaliar seios maxilares e integridade das paredes orbitárias."></textarea>
             </label>
@@ -344,6 +345,10 @@
           </div>
           <div class="ia-output">
             <div id="ia-status" class="hint">Abra um exame para habilitar a análise.</div>
+            <details id="ia-findings-box" class="ia-findings" hidden>
+              <summary>Leitura automática do exame (medidas calculadas pelo app)</summary>
+              <article id="ia-findings" class="ia-text"></article>
+            </details>
             <article id="ia-text" class="ia-text"></article>
           </div>
         </div>
