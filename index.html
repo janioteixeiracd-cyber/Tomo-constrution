@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0f16" />
     <title>TomoRecon 3D</title>
-    <script type="module" crossorigin src="./assets/index-iUEqIHzR.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CkNaaiXQ.css">
+    <script type="module" crossorigin src="./assets/index-D0StZogy.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DsoQ7z9l.css">
   </head>
   <body>
     <header class="topbar">
@@ -43,6 +43,16 @@
           <h2>Séries</h2>
           <ul id="series-list" class="series-list"></ul>
           <p class="hint" id="skipped"></p>
+        </section>
+
+        <section class="card" id="plan-card" hidden>
+          <h2>Plano da reconstrução</h2>
+          <p id="plan-strategy" class="plan-strategy"></p>
+          <ul id="plan-rationale" class="plan-list"></ul>
+          <label class="switch" id="plan-fusion-box" hidden><input type="checkbox" id="plan-fusion" checked /> Fundir as séries complementares</label>
+          <ul id="plan-roles" class="plan-roles"></ul>
+          <h3>Ajustes escolhidos para este exame</h3>
+          <ul id="plan-settings" class="plan-list"></ul>
         </section>
 
         <section class="card" id="study-card" hidden>
@@ -154,6 +164,7 @@
                 </select>
               </label>
               <label class="switch"><input type="checkbox" id="remove-parts" checked /> Remover fragmentos soltos (suporte, ruído)</label>
+              <label class="switch"><input type="checkbox" id="thin-walls" checked /> Preservar paredes finas (órbita, seios, septo)</label>
             </div>
           </details>
           <button id="recon-btn" class="primary" disabled>Reconstruir 3D</button>
