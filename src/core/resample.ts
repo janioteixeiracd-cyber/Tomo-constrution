@@ -83,12 +83,13 @@ export function resampleZ(vol: Volume, targetSpacing: number, method: Exclude<In
 }
 
 /** Suavização gaussiana separável (sigma em mm) sobre Float32. */
-export function gaussian3D(data: Float32Array, dims: Vec3, spacing: Vec3, sigmaMm: number): Float32Array {
-  if (sigmaMm <= 0) return data;
+export function gaussian3D(data: Float32Array, dims: Vec3, spacing: Vec3, sigmaMm: number | Vec3): Float32Array {
+  const sigmas: Vec3 = typeof sigmaMm === 'number' ? [sigmaMm, sigmaMm, sigmaMm] : sigmaMm;
+  if (sigmas.every((v) => v <= 0)) return data;
   const strides = [1, dims[0], dims[0] * dims[1]];
   let cur = data;
   for (let axis = 0; axis < 3; axis++) {
-    const sigma = sigmaMm / spacing[axis];
+    const sigma = sigmas[axis] / spacing[axis];
     const n = dims[axis];
     if (sigma < 0.3 || n < 2) continue;
     const r = Math.ceil(sigma * 2.5);
@@ -142,10 +143,17 @@ export function shapeBasedField(vol: Volume, threshold: number, targetSpacing: n
     const i1 = Math.min(nz - 1, Math.floor(zf));
     const i2 = Math.min(nz - 1, i1 + 1);
     const t = zf - i1;
-    const a = sdf[i1];
-    const b = sdf[i2];
     const o = k * plane;
-    for (let i = 0; i < plane; i++) out[o + i] = a[i] + (b[i] - a[i]) * t;
+    const b = sdf[i1];
+    if (t < 1e-4) {
+      out.set(b, o);
+      continue;
+    }
+    // Catmull-Rom entre 4 cortes: a forma muda suavemente e não deixa "quinas" em cada corte original
+    const a = sdf[Math.max(0, i1 - 1)];
+    const c = sdf[i2];
+    const d = sdf[Math.min(nz - 1, i1 + 2)];
+    for (let i = 0; i < plane; i++) out[o + i] = cubic(a[i], b[i], c[i], d[i], t);
   }
   return out;
 }
@@ -157,8 +165,8 @@ export function reconstruct(source: Volume, opts: ReconOptions, maxVoxels = 24e6
   const estZ = Math.max(source.dims[2], ((source.dims[2] - 1) * source.spacing[2]) / sz + 1);
   let factor = 1;
   while ((source.dims[0] / factor) * (source.dims[1] / factor) * estZ > maxVoxels) factor++;
-  // não vale a pena ter pixel muito menor que o espaçamento alvo
-  while (source.spacing[0] * (factor + 1) <= opts.targetSpacing * 0.75) factor++;
+  // pixels menores que 0,5 mm não acrescentam detalhe visível ao modelo e custam memória
+  while (source.spacing[0] * (factor + 1) <= 0.5) factor++;
   const base = downsampleXY(source, factor);
   if (factor > 1) notes.push(`Resolução no plano reduzida ${factor}× (${fmt(base.spacing[0])} mm por pixel) para caber na memória do aparelho.`);
 
@@ -182,7 +190,9 @@ export function reconstruct(source: Volume, opts: ReconOptions, maxVoxels = 24e6
     for (let i = 0; i < field.length; i++) field[i] = intensity.data[i] - opts.threshold;
   }
   if (opts.smoothing > 0) {
-    field = gaussian3D(field, intensity.dims, intensity.spacing, opts.smoothing);
+    // cortes espessos: suaviza mais entre os cortes (onde não há informação) para apagar os degraus
+    const zSigma = source.spacing[2] > 2 * source.spacing[0] ? Math.max(opts.smoothing, 0.25 * source.spacing[2]) : opts.smoothing;
+    field = gaussian3D(field, intensity.dims, intensity.spacing, [opts.smoothing, opts.smoothing, zSigma]);
   }
 
   if (opts.removeSmallParts) {

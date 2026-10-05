@@ -267,8 +267,11 @@ export class View3D {
     cam.setPosition(c[0] + from[0] * 500, c[1] + from[1] * 500, c[2] + from[2] * 500);
     cam.setViewUp(...up);
     this.renderer.resetCamera(b as [number, number, number, number, number, number]);
-    // resetCamera enquadra a esfera envolvente; aproxima para o modelo ocupar a vista
-    cam.zoom(1.6);
+    // resetCamera enquadra a esfera envolvente; aproxima para o modelo ocupar a vista.
+    // O ângulo de visão é vertical: em tela de pé (celular) a largura limita, então aproxima menos.
+    const rect = this.container.getBoundingClientRect();
+    const aspect = rect.height ? rect.width / rect.height : 1;
+    cam.zoom(Math.max(1, 1.6 * Math.min(1, aspect / 0.95)));
     this.render();
   }
 

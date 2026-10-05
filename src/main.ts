@@ -301,7 +301,9 @@ function reconOptions(b: BuiltVolume): ReconOptions {
   const interpolation: InterpolationMethod = choice === 'auto' ? (sz > 2 ? 'shape' : 'cubic') : (choice as InterpolationMethod);
   return {
     threshold: Number(thresholdInput.value),
-    targetSpacing: sz <= 1 ? sz : Math.max(0.5, Math.min(1, sx * 2)),
+    // entre cortes espessos não há detalhe real a ganhar: ~1/3,5 do intervalo basta, e a memória
+    // economizada vai para a resolução no plano, que é informação verdadeira
+    targetSpacing: sz <= 1 ? sz : Math.max(Math.min(1, Math.max(0.5, sx * 2)), Math.min(1.6, sz / 3.5)),
     interpolation,
     smoothing: Number(smoothingInput.value),
     removeSmallParts: $<HTMLInputElement>('#remove-parts').checked,
@@ -327,7 +329,8 @@ async function runRecon() {
   reconBtn.textContent = 'Reconstruir 3D';
   const opts = reconOptions(built);
   try {
-    const res = await client.recon(opts, Number($<HTMLSelectElement>('#detail').value), opts.smoothing > 0 ? 15 : 0, (m) => {
+    const iterations = opts.smoothing > 0 ? (built.volume.spacing[2] > 3 ? 30 : 15) : 0;
+    const res = await client.recon(opts, Number($<HTMLSelectElement>('#detail').value), iterations, (m) => {
       busy.querySelector('span')!.textContent = m;
     });
     if (token !== reconToken) return;

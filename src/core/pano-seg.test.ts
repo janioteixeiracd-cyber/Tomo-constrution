@@ -86,4 +86,20 @@ describe('segmentação', () => {
     expect(seg.labels[45 * N * N + 30 * N + 30]).toBe(1); // crânio
     expect(seg.labels[24 * N * N + 15 * N + 21]).toBe(3); // dente
   });
+
+  it('não chama de mandíbula uma peça que não chega ao ponto mais baixo do osso', () => {
+    const dims: Vec3 = [N, N, N];
+    const hu = new Int16Array(N ** 3).fill(-1000);
+    const set = (x: number, y: number, z: number, v: number) => (hu[z * N * N + y * N + x] = v);
+    for (let z = 34; z < 62; z++) for (let y = 8; y < 56; y++) for (let x = 8; x < 56; x++) set(x, y, z, 1000);
+    // peça larga e grande, solta, no meio da altura (como paredes laterais isoladas pela erosão)
+    for (let z = 12; z < 32; z++) for (let y = 6; y < 33; y++) for (let x = 6; x < 58; x++) set(x, y, z, 900);
+    // coluna estreita e posterior que desce até a borda inferior
+    for (let z = 0; z < 34; z++) for (let y = 44; y < 52; y++) for (let x = 28; x < 36; x++) set(x, y, z, 900);
+    const field = new Float32Array(hu.length);
+    for (let i = 0; i < hu.length; i++) field[i] = hu[i] - 200;
+    const vol: Volume = { dims, spacing: [1, 1, 1], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1], data: hu };
+    const seg = segmentBone({ intensity: vol, surfaceField: { ...vol, data: field }, notes: [] }, 200, true);
+    expect(seg.stats.map((s) => s.key)).not.toContain('mandibula');
+  });
 });

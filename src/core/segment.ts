@@ -138,16 +138,24 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
   // eixo superior/inferior: +z é superior quando a normal dos cortes aponta para S
   const zSup = intensity.direction[8] >= 0;
   const xs = (i: number) => i % nx;
+  const ys = (i: number) => ((i / nx) | 0) % ny;
   const zs = (i: number) => (i / plane) | 0;
+  // eixo ântero-posterior: +y aponta para posterior quando a coluna da imagem aponta para P
+  const yPost = intensity.direction[4] >= 0;
 
   let bxMin = nx;
   let bxMax = 0;
   let bzMin = nz;
   let bzMax = 0;
+  let byMin = ny;
+  let byMax = 0;
   for (let i = 0; i < n; i += 2)
     if (jaw[i]) {
       const x = xs(i);
+      const y = ys(i);
       const z = zs(i);
+      if (y < byMin) byMin = y;
+      if (y > byMax) byMax = y;
       if (x < bxMin) bxMin = x;
       if (x > bxMax) bxMax = x;
       if (z < bzMin) bzMin = z;
@@ -155,6 +163,7 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
     }
   const widthX = Math.max(1, bxMax - bxMin);
   const heightZ = Math.max(1, bzMax - bzMin);
+  const depthY = Math.max(1, byMax - byMin);
 
   let mandibleLabel = -1;
   let cc = components(eroded, dims);
@@ -166,7 +175,7 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
     const total = cc.sizes.reduce((a, b) => a + b, 0);
     const largest = cc.sizes.indexOf(Math.max(...cc.sizes));
     // estatísticas por componente
-    const stats = cc.sizes.map(() => ({ xMin: nx, xMax: 0, zMin: nz, zMax: 0, zSum: 0 }));
+    const stats = cc.sizes.map(() => ({ xMin: nx, xMax: 0, zMin: nz, zMax: 0, zSum: 0, ySum: 0 }));
     for (let i = 0; i < n; i++) {
       const l = cc.labels[i];
       if (!l) continue;
@@ -178,6 +187,7 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
       if (z < s.zMin) s.zMin = z;
       if (z > s.zMax) s.zMax = z;
       s.zSum += z;
+      s.ySum += ys(i);
     }
     let bestSize = 0;
     for (let l = 1; l < cc.sizes.length; l++) {
@@ -186,11 +196,16 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
       const span = (s.xMax - s.xMin) / widthX;
       const zMean = s.zSum / cc.sizes[l];
       const relHeight = zSup ? (zMean - bzMin) / heightZ : (bzMax - zMean) / heightZ;
-      // mandíbula: larga (cruza a linha média), na parte inferior do volume, com volume e altura
-      // de mandíbula (medidos após a erosão) — evita rotular um processo alveolar cortado pela borda do exame
+      // mandíbula: larga (cruza a linha média), anterior, chegando ao ponto mais baixo do osso
+      // (mento), com volume e altura de mandíbula (medidos após a erosão). Isso evita rotular
+      // paredes laterais do crânio, a coluna cervical ou um processo alveolar cortado pela borda.
       const volumeMm3 = cc.sizes[l] * voxelVol;
       const heightMm = (s.zMax - s.zMin) * intensity.spacing[2];
-      if (span > 0.35 && relHeight < 0.4 && volumeMm3 > 10000 && heightMm > 20 && cc.sizes[l] > bestSize) {
+      const lowestRel = zSup ? (s.zMin - bzMin) / heightZ : (bzMax - s.zMax) / heightZ;
+      const yRel = (s.ySum / cc.sizes[l] - byMin) / depthY;
+      const anterior = yPost ? yRel < 0.6 : yRel > 0.4;
+      const plausible = volumeMm3 > 10000 && volumeMm3 < 110000 && heightMm > 20;
+      if (span > 0.35 && relHeight < 0.4 && lowestRel < 0.12 && anterior && plausible && cc.sizes[l] > bestSize) {
         bestSize = cc.sizes[l];
         mandibleLabel = l;
       }
