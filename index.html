@@ -329,6 +329,15 @@
               <button id="ia-run" class="primary" disabled>Gerar descrição</button>
               <button id="ia-stop" class="ghost" hidden>Parar</button>
             </div>
+            <div class="ia-chat">
+              <button id="ia-chat" class="ghost" disabled>Analisar no chat do Claude (com imagens)</button>
+              <p class="hint">Salva uma montagem anonimizada das imagens e prepara o texto. Depois, num chat do Claude, anexe a montagem e cole o texto. Funciona no celular, sem chave.</p>
+              <div id="ia-chat-box" hidden>
+                <img id="ia-chat-img" class="ia-chat-img" alt="Montagem anonimizada das imagens do caso" hidden />
+                <textarea id="ia-chat-text" rows="5" readonly></textarea>
+                <div class="row"><button id="ia-chat-copy" class="small">Copiar texto</button><span id="ia-chat-msg" class="hint"></span></div>
+              </div>
+            </div>
             <div id="ia-sent" class="ia-sent" hidden></div>
           </div>
           <div class="ia-output">

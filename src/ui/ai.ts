@@ -77,6 +77,44 @@ function userText(req: DescribeRequest) {
   }`;
 }
 
+/** Texto para colar no chat do Claude junto com a montagem das imagens (uma única imagem numerada). */
+export function chatPrompt(req: Pick<DescribeRequest, 'images' | 'technical' | 'question'>): string {
+  return `${SYSTEM_PROMPT}\n\nAs imagens vêm numa única montagem anexada, cada quadro numerado na ordem abaixo.\n\n${userText(req as DescribeRequest)}`;
+}
+
+/** Junta as imagens numa montagem JPEG numerada (para anexar no chat do Claude). */
+export async function montage(images: CaseImage[], cell = 720): Promise<Blob> {
+  const bitmaps = await Promise.all(images.map((i) => createImageBitmap(i.blob)));
+  const cols = images.length > 1 ? 2 : 1;
+  const rows = Math.ceil(images.length / cols);
+  const head = 34;
+  const heights = bitmaps.map((b) => Math.round((b.height * cell) / b.width));
+  const rowH = Array.from({ length: rows }, (_, r) => Math.max(...heights.slice(r * cols, r * cols + cols)) + head);
+  const c = document.createElement('canvas');
+  c.width = cols * cell + (cols - 1) * 8;
+  c.height = rowH.reduce((a, b) => a + b, 0) + (rows - 1) * 8;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, c.width, c.height);
+  let y = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let k = 0; k < cols; k++) {
+      const i = r * cols + k;
+      if (i >= images.length) break;
+      const x = k * (cell + 8);
+      ctx.fillStyle = '#ffcf5c';
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      const label = `${i + 1}. ${images[i].label}`;
+      ctx.fillText(label.length > 58 ? `${label.slice(0, 56)}…` : label, x + 6, y + head / 2);
+      ctx.drawImage(bitmaps[i], x, y + head, cell, heights[i]);
+    }
+    y += rowH[r] + 8;
+  }
+  bitmaps.forEach((b) => b.close());
+  return canvasToJpeg(c, 2000);
+}
+
 /** Descreve o caso com o Claude. Usa o Claude do claude.ai quando disponível; senão, a chave de API informada. */
 export async function describeCase(req: DescribeRequest): Promise<string> {
   const host = await claudeHostSample();

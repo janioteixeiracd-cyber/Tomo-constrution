@@ -819,10 +819,59 @@ input[type='text'] {
 }
 
 .ia-text {
-  white-space: pre-wrap;
   line-height: 1.6;
   max-width: 75ch;
   margin-top: 8px;
+}
+
+.ia-text h3,
+.ia-text h4 {
+  margin: 18px 0 6px;
+  font-size: 15.5px;
+  color: var(--accent);
+}
+
+.ia-text h4 {
+  font-size: 14px;
+}
+
+.ia-text p {
+  margin: 0 0 10px;
+}
+
+.ia-text ul,
+.ia-text ol {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.ia-text li + li {
+  margin-top: 4px;
+}
+
+.ia-text hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 14px 0;
+}
+
+.ia-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.ia-chat-img {
+  width: 100%;
+  border-radius: 8px;
+  background: #000;
+  margin-bottom: 6px;
+}
+
+.ia-chat .hint {
+  margin: 0;
 }
 
 .plan-strategy {

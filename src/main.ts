@@ -12,7 +12,8 @@ import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, Surfac
 import { defaultTissues, sampleTransfer, TISSUE_PRESETS, type TissueClass } from './ui/tissues';
 import { PanoPanel } from './ui/pano-ui';
 import { planReconstruction, type ReconPlan } from './core/plan';
-import { canvasToJpeg, claudeHostSample, describeCase, describeError, type CaseImage } from './ui/ai';
+import { canvasToJpeg, chatPrompt, claudeHostSample, describeCase, describeError, montage, type CaseImage } from './ui/ai';
+import { renderMarkdown } from './ui/markdown';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const $$ = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
@@ -953,6 +954,7 @@ claudeHostSample().then((h) => {
 function enableAi() {
   $<HTMLButtonElement>('#ia-run').disabled = false;
   $<HTMLButtonElement>('#ia-preview').disabled = false;
+  $<HTMLButtonElement>('#ia-chat').disabled = false;
   $('#ia-status').textContent = 'Escolha as imagens, escreva o contexto e toque em Gerar descrição.';
 }
 
@@ -1090,10 +1092,10 @@ $('#ia-run').addEventListener('click', async () => {
       signal: iaAbort.signal,
       onText: (t) => {
         status.textContent = 'Escrevendo…';
-        out.textContent = t;
+        renderMarkdown(out, t);
       },
     });
-    out.textContent = text;
+    renderMarkdown(out, text);
     status.textContent = 'Descrição educacional gerada por IA. Confira nas imagens antes de usar no estudo.';
   } catch (e) {
     status.textContent = describeError(e);
@@ -1101,6 +1103,46 @@ $('#ia-run').addEventListener('click', async () => {
     run.disabled = false;
     stop.hidden = true;
     iaAbort = null;
+  }
+});
+$('#ia-chat').addEventListener('click', async () => {
+  if (!built) return;
+  const btn = $<HTMLButtonElement>('#ia-chat');
+  const msg = $('#ia-chat-msg');
+  const area = $<HTMLTextAreaElement>('#ia-chat-text');
+  btn.disabled = true;
+  $('#ia-chat-box').hidden = false;
+  msg.textContent = 'Montando as imagens anonimizadas…';
+  try {
+    const images = await collectImages();
+    if (!images.length) throw new Error('Marque ao menos uma imagem a enviar.');
+    area.value = chatPrompt({ images, technical: technicalSummary(), question: $<HTMLTextAreaElement>('#ia-question').value });
+    const blob = await montage(images);
+    const img = $<HTMLImageElement>('#ia-chat-img');
+    if (img.src) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(blob);
+    img.hidden = false;
+    const err = await saveFile(`caso-anonimizado-${Date.now() % 100000}.jpg`, blob);
+    msg.textContent = err
+      ? `${err} Se preferir, toque e segure a montagem acima para salvá-la nas Fotos.`
+      : 'Montagem salva (ou toque e segure nela acima para salvar nas Fotos). Agora toque em Copiar texto, abra um chat novo do Claude, anexe a imagem salva e cole o texto.';
+  } catch (e) {
+    msg.textContent = (e as Error).message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+$('#ia-chat-copy').addEventListener('click', async () => {
+  const area = $<HTMLTextAreaElement>('#ia-chat-text');
+  const msg = $('#ia-chat-msg');
+  try {
+    await navigator.clipboard.writeText(area.value);
+    msg.textContent = 'Texto copiado. Cole no chat do Claude junto com a imagem.';
+  } catch {
+    area.focus();
+    area.select();
+    area.setSelectionRange(0, area.value.length);
+    msg.textContent = 'Texto selecionado: use Copiar do menu do iPhone.';
   }
 });
 $('#export-png').addEventListener('click', async () => {
