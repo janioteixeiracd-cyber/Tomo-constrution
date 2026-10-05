@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0f16" />
     <title>TomoRecon 3D</title>
-    <script type="module" crossorigin src="./assets/index-u8DOIyhe.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DoEEskvb.css">
+    <script type="module" crossorigin src="./assets/index-nNXf0GiR.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CkNaaiXQ.css">
   </head>
   <body>
     <header class="topbar">
@@ -15,7 +15,9 @@
       <nav class="tabs" role="tablist">
         <button role="tab" data-tab="cortes" aria-selected="true">Cortes</button>
         <button role="tab" data-tab="tresd" aria-selected="false">3D</button>
+        <button role="tab" data-tab="pano" aria-selected="false">Panorâmica</button>
         <button role="tab" data-tab="imagem" aria-selected="false">Imagem 2D</button>
+        <button role="tab" data-tab="ia" aria-selected="false">Análise IA</button>
       </nav>
       <div class="edu-badge" title="Ferramenta de estudo. Não substitui o laudo do exame.">Uso educacional</div>
     </header>
@@ -104,6 +106,16 @@
           <button id="export-stl" class="ghost" disabled>Exportar STL</button>
           <button id="export-png" class="ghost" disabled>Salvar imagem</button>
         </div>
+        <div class="toolbar">
+          <div class="seg" id="measure-tools" role="group" aria-label="Medir no 3D">
+            <button data-measure="girar" class="on" title="Arraste para girar, pinça para zoom">Girar</button>
+            <button data-measure="distancia" title="Toque em 2 pontos do osso">Distância</button>
+            <button data-measure="angulo" title="Toque em 3 pontos; o do meio é o vértice">Ângulo</button>
+            <button data-measure="ponto" title="Marque pontos de referência">Ponto</button>
+          </div>
+          <button id="segment-btn" class="ghost" disabled>Segmentar estruturas</button>
+          <span class="hint" id="measure-hint"></span>
+        </div>
         <div class="recon-controls">
           <label>Limiar ósseo <output id="thr-out"></output>
             <input type="range" id="threshold" min="-200" max="1500" step="10" value="200" />
@@ -151,7 +163,50 @@
           <div class="empty" id="view3d-empty">Abra um exame e toque em <b>Reconstruir 3D</b>.</div>
           <div class="busy" id="busy3d" hidden><div class="spinner"></div><span></span></div>
         </div>
+        <div class="under3d">
+          <section class="card" id="layers-card" hidden>
+            <h2>Estruturas</h2>
+            <ul id="layers-list" class="layers"></ul>
+          </section>
+          <section class="card" id="measures-card" hidden>
+            <h2>Medidas <button id="measures-clear" class="ghost small">Limpar</button></h2>
+            <ul id="measures-list" class="measures"></ul>
+          </section>
+        </div>
         <ul class="notes" id="recon-notes"></ul>
+      </section>
+
+      <section class="panel" id="tab-pano" data-panel="pano" hidden>
+        <div class="toolbar">
+          <span class="hint">No corte axial, toque pontos ao longo do arco dentário, de um lado ao outro (mín. 3).</span>
+          <button id="pano-undo" class="ghost">Desfazer ponto</button>
+          <button id="pano-clear" class="ghost">Limpar curva</button>
+          <label class="inline">Espessura <input type="range" id="pano-thickness" min="2" max="40" step="1" value="15" /> <output id="pano-thickness-out">15 mm</output></label>
+          <select id="pano-mode" aria-label="Modo da panorâmica">
+            <option value="media">Média (aspecto radiográfico)</option>
+            <option value="mip">MIP (realça dentes e osso)</option>
+          </select>
+          <div class="seg" role="group" aria-label="Janela">
+            <button data-pano-wl="osso" class="on">Osso</button>
+            <button data-pano-wl="dentes">Dentes</button>
+          </div>
+        </div>
+        <div class="pano-grid">
+          <div class="pano-axial mpr-view">
+            <div class="mpr-title">Axial — desenhe o arco</div>
+            <canvas id="pano-axial"></canvas>
+            <input type="range" id="pano-slice" class="mpr-slider" min="0" max="0" value="0" aria-label="Corte axial" />
+          </div>
+          <div class="pano-main mpr-view">
+            <div class="mpr-title">Panorâmica reconstruída</div>
+            <canvas id="pano-image"></canvas>
+          </div>
+          <div class="pano-cross mpr-view">
+            <div class="mpr-title">Corte transversal (40 mm)</div>
+            <canvas id="pano-cross"></canvas>
+          </div>
+        </div>
+        <div class="empty" id="pano-empty">Abra um exame DICOM para montar a panorâmica.</div>
       </section>
 
       <section class="panel" id="tab-imagem" data-panel="imagem" hidden>
@@ -181,6 +236,46 @@
             </p>
           </div>
           <div class="enh-view"><canvas id="enh-canvas"></canvas></div>
+        </div>
+      </section>
+      <section class="panel" id="tab-ia" data-panel="ia" hidden>
+        <div class="ia">
+          <div class="ia-form">
+            <p class="disclaimer moderada">
+              <strong>Descrição educacional por IA</strong>
+              <span>Apoio ao estudo do caso. Não é laudo e pode conter erros: confira tudo nas imagens.</span>
+            </p>
+            <fieldset>
+              <legend>Imagens a enviar</legend>
+              <label class="switch"><input type="checkbox" data-ia-img="axial" checked /> Corte axial atual</label>
+              <label class="switch"><input type="checkbox" data-ia-img="coronal" checked /> Corte coronal atual</label>
+              <label class="switch"><input type="checkbox" data-ia-img="sagittal" checked /> Corte sagital atual</label>
+              <label class="switch"><input type="checkbox" data-ia-img="3d-frontal" checked /> 3D frontal</label>
+              <label class="switch"><input type="checkbox" data-ia-img="3d-lateral" checked /> 3D lateral</label>
+              <label class="switch"><input type="checkbox" data-ia-img="pano" checked /> Panorâmica e transversal (se montadas)</label>
+            </fieldset>
+            <label class="stack">Contexto clínico e pergunta (sem nome, CPF ou dados que identifiquem o paciente)
+              <textarea id="ia-question" rows="4" placeholder="Ex.: paciente com queixa de dor em região de maxila direita; avaliar seios maxilares e integridade das paredes orbitárias."></textarea>
+            </label>
+            <div id="ia-key-box">
+              <label class="stack">Chave de API da Anthropic
+                <input type="password" id="ia-key" autocomplete="off" placeholder="sk-ant-…" />
+              </label>
+              <label class="switch"><input type="checkbox" id="ia-remember" /> Lembrar neste aparelho</label>
+              <p class="hint">A chave fica só neste navegador e é enviada apenas para api.anthropic.com. Crie uma em console.anthropic.com.</p>
+            </div>
+            <p class="hint" id="ia-host-note" hidden>Usando o Claude da sua conta do claude.ai (sem chave de API).</p>
+            <div class="row">
+              <button id="ia-preview" class="ghost" disabled>Ver o que será enviado</button>
+              <button id="ia-run" class="primary" disabled>Gerar descrição</button>
+              <button id="ia-stop" class="ghost" hidden>Parar</button>
+            </div>
+            <div id="ia-sent" class="ia-sent" hidden></div>
+          </div>
+          <div class="ia-output">
+            <div id="ia-status" class="hint">Abra um exame para habilitar a análise.</div>
+            <article id="ia-text" class="ia-text"></article>
+          </div>
         </div>
       </section>
     </main>
