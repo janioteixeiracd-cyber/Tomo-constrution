@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0f16" />
+    <title>TomoRecon 3D</title>
+    <script type="module" crossorigin src="./assets/index-u8DOIyhe.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DoEEskvb.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">TomoRecon <span>3D</span></div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="cortes" aria-selected="true">Cortes</button>
+        <button role="tab" data-tab="tresd" aria-selected="false">3D</button>
+        <button role="tab" data-tab="imagem" aria-selected="false">Imagem 2D</button>
+      </nav>
+      <div class="edu-badge" title="Ferramenta de estudo. Não substitui o laudo do exame.">Uso educacional</div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="card">
+          <h2>Exame DICOM</h2>
+          <label class="drop" id="drop">
+            <input type="file" id="file-input" multiple accept=".dcm,.zip,application/dicom,application/zip,*/*" />
+            <strong>Abrir arquivos</strong>
+            <span>.dcm, pasta compactada (.zip) ou arraste aqui</span>
+          </label>
+          <label class="drop small">
+            <input type="file" id="dir-input" webkitdirectory multiple />
+            <span>ou selecionar uma pasta inteira</span>
+          </label>
+          <p class="privacy">Os arquivos são processados apenas neste navegador e não são enviados para nenhum servidor.</p>
+          <div id="status" class="status" hidden></div>
+        </section>
+
+        <section class="card" id="series-card" hidden>
+          <h2>Séries</h2>
+          <ul id="series-list" class="series-list"></ul>
+          <p class="hint" id="skipped"></p>
+        </section>
+
+        <section class="card" id="study-card" hidden>
+          <h2>Paciente</h2>
+          <label class="switch"><input type="checkbox" id="hide-patient" checked /> Ocultar dados do paciente</label>
+          <dl id="study-info" class="facts"></dl>
+        </section>
+
+        <section class="card" id="quality-card" hidden>
+          <h2>Qualidade dos dados <span id="quality-badge" class="badge"></span></h2>
+          <dl id="quality-facts" class="facts"></dl>
+          <ul id="quality-warnings" class="warnings"></ul>
+        </section>
+      </aside>
+
+      <section class="panel" id="tab-cortes" data-panel="cortes">
+        <div class="toolbar">
+          <div class="seg" id="tools" role="group" aria-label="Ferramenta">
+            <button data-tool="navegar" class="on" title="Clique para posicionar os cortes">Navegar</button>
+            <button data-tool="janela" title="Arraste: horizontal = largura, vertical = nível">Janela</button>
+            <button data-tool="regua" title="Arraste para medir em mm">Régua</button>
+            <button data-tool="densidade" title="Clique para ver a densidade (HU)">Densidade</button>
+          </div>
+          <div class="seg" id="presets" role="group" aria-label="Janela">
+            <button data-wl="500,2500">Osso</button>
+            <button data-wl="40,400">Partes moles</button>
+            <button data-wl="-600,1600">Seios/ar</button>
+            <button data-wl="1000,4000">Dentes/metal</button>
+          </div>
+          <button id="clear-annot" class="ghost">Limpar medidas</button>
+          <button id="layout-toggle" class="ghost">1 / 3 vistas</button>
+        </div>
+        <div class="mpr-grid" id="mpr-grid">
+          <div id="view-axial"></div>
+          <div id="view-coronal"></div>
+          <div id="view-sagittal"></div>
+        </div>
+        <div class="empty" id="mpr-empty">Abra um exame DICOM para ver os cortes.</div>
+      </section>
+
+      <section class="panel" id="tab-tresd" data-panel="tresd" hidden>
+        <div class="disclaimer" id="recon-disclaimer" hidden></div>
+        <div class="toolbar">
+          <div class="seg" role="group" aria-label="Modo">
+            <button data-mode="superficie" class="on">Superfície óssea</button>
+            <button data-mode="volume">Volume</button>
+          </div>
+          <div class="seg" id="vr-presets" role="group" aria-label="Predefinição" hidden>
+            <button data-preset="osso" class="on">Osso</button>
+            <button data-preset="osso-pele">Osso + pele</button>
+            <button data-preset="pele">Pele</button>
+          </div>
+          <select id="camera-view" aria-label="Vista">
+            <option value="frontal">Frontal</option>
+            <option value="direita">Lateral direita</option>
+            <option value="esquerda">Lateral esquerda</option>
+            <option value="superior">Superior</option>
+            <option value="inferior">Inferior (basal)</option>
+            <option value="posterior">Posterior</option>
+          </select>
+          <button id="export-stl" class="ghost" disabled>Exportar STL</button>
+          <button id="export-png" class="ghost" disabled>Salvar imagem</button>
+        </div>
+        <div class="recon-controls">
+          <label>Limiar ósseo <output id="thr-out"></output>
+            <input type="range" id="threshold" min="-200" max="1500" step="10" value="200" />
+          </label>
+          <label>Corte do modelo
+            <span class="row">
+              <select id="clip-axis">
+                <option value="nenhum">Sem corte</option>
+                <option value="sagital">Sagital</option>
+                <option value="coronal">Coronal</option>
+                <option value="axial">Axial</option>
+              </select>
+              <input type="range" id="clip-pos" min="0" max="100" value="50" disabled />
+              <label class="switch"><input type="checkbox" id="clip-flip" disabled /> inverter</label>
+            </span>
+          </label>
+          <details>
+            <summary>Ajustes avançados</summary>
+            <div class="adv">
+              <label>Interpolação entre cortes
+                <select id="interp">
+                  <option value="auto">Automática</option>
+                  <option value="shape">Baseada em forma (cortes espessos)</option>
+                  <option value="cubic">Cúbica</option>
+                  <option value="linear">Linear</option>
+                </select>
+              </label>
+              <label>Suavização <output id="smooth-out"></output>
+                <input type="range" id="smoothing" min="0" max="2" step="0.1" value="0.6" />
+              </label>
+              <label>Qualidade
+                <select id="detail">
+                  <option value="6000000">Leve (celular)</option>
+                  <option value="16000000" selected>Equilibrada</option>
+                  <option value="40000000">Alta (computador)</option>
+                </select>
+              </label>
+              <label class="switch"><input type="checkbox" id="remove-parts" checked /> Remover fragmentos soltos (suporte, ruído)</label>
+            </div>
+          </details>
+          <button id="recon-btn" class="primary" disabled>Reconstruir 3D</button>
+        </div>
+        <div class="view3d-wrap">
+          <div id="view3d"></div>
+          <div class="empty" id="view3d-empty">Abra um exame e toque em <b>Reconstruir 3D</b>.</div>
+          <div class="busy" id="busy3d" hidden><div class="spinner"></div><span></span></div>
+        </div>
+        <ul class="notes" id="recon-notes"></ul>
+      </section>
+
+      <section class="panel" id="tab-imagem" data-panel="imagem" hidden>
+        <div class="enh">
+          <div class="enh-controls">
+            <label class="drop">
+              <input type="file" id="enh-file" accept="image/*" />
+              <strong>Abrir imagem</strong>
+              <span>radiografia, foto do negatoscópio ou captura de tela</span>
+            </label>
+            <label>Redução de ruído <input type="range" data-opt="denoise" min="0" max="3" step="1" /></label>
+            <label>Contraste local (CLAHE) <input type="range" data-opt="clahe" min="0" max="6" step="0.5" /></label>
+            <label>Nitidez <input type="range" data-opt="sharpen" min="0" max="3" step="0.1" /></label>
+            <label>Brilho <input type="range" data-opt="brightness" min="-100" max="100" step="1" /></label>
+            <label>Contraste <input type="range" data-opt="contrast" min="-100" max="100" step="1" /></label>
+            <label>Gama <input type="range" data-opt="gamma" min="0.3" max="3" step="0.05" /></label>
+            <label class="switch"><input type="checkbox" data-opt="invert" /> Inverter (negativo)</label>
+            <label>Comparar antes/depois <input type="range" id="enh-split" min="0" max="100" value="50" /></label>
+            <div class="row">
+              <button id="enh-reset" class="ghost">Restaurar padrão</button>
+              <button id="enh-download" class="primary">Baixar realçada</button>
+            </div>
+            <p id="enh-msg" class="status error" hidden></p>
+            <p class="hint">
+              O realce melhora a leitura, mas não recupera detalhes que não foram captados. Uma radiografia é uma
+              projeção 2D: para reconstrução 3D é preciso tomografia (TC ou CBCT) em DICOM.
+            </p>
+          </div>
+          <div class="enh-view"><canvas id="enh-canvas"></canvas></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
