@@ -1,15 +1,17 @@
 import type { ReconResult, Vec3 } from './types';
 
-export type SegmentKey = 'cranio' | 'mandibula' | 'dentes';
+export type SegmentKey = 'cranio' | 'mandibula' | 'dentes' | 'metal';
 
 export interface SegmentationResult {
-  /** rótulo por voxel na grade da reconstrução: 0 fundo, 1 crânio/maxila, 2 mandíbula, 3 dentes */
+  /** rótulo por voxel na grade da reconstrução: 0 fundo, 1 crânio/face, 2 mandíbula, 3 dentes, 4 metal */
   labels: Uint8Array;
-  /** campos para extração de superfície (isovalor 0) por estrutura encontrada */
-  fields: { key: SegmentKey; data: Float32Array }[];
   notes: string[];
   stats: { key: SegmentKey; volumeMm3: number }[];
+  /** limiar baixo usado para a superfície dos dentes */
+  teethLow: number;
 }
+
+export const LABEL_IDS: Record<SegmentKey, number> = { cranio: 1, mandibula: 2, dentes: 3, metal: 4 };
 
 const NEIGHBORS = (nx: number, ny: number) => [1, -1, nx, -nx, nx * ny, -nx * ny];
 
@@ -95,7 +97,7 @@ function percentile(values: Float32Array | Int16Array, mask: (i: number) => bool
  * - mandíbula: separada do crânio por erosão (rompe a ATM e contatos finos) e componentes conexos;
  * - crânio/maxila: o restante do osso.
  */
-export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: boolean): SegmentationResult {
+export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: boolean, metal?: Uint8Array): SegmentationResult {
   const { intensity, surfaceField } = rec;
   const dims = intensity.dims;
   const [nx, ny, nz] = dims;
@@ -105,16 +107,16 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
   const hu = intensity.data;
   const notes: string[] = [];
   const bone = new Uint8Array(n);
-  for (let i = 0; i < n; i++) bone[i] = field[i] > 0 ? 1 : 0;
+  for (let i = 0; i < n; i++) bone[i] = field[i] > 0 && !(metal && metal[i]) ? 1 : 0;
 
-  // ---- dentes ----
+  // ---- dentes (sem o metal, que tem camada própria) ----
   const p999 = percentile(hu, (i) => bone[i] === 1, 99.9);
   const seedT = calibratedHU ? Math.max(2300, Math.min(p999, 3000)) : p999;
   const lowT = threshold + 0.62 * (seedT - threshold);
   const seeds = new Uint8Array(n);
   let seedCount = 0;
   for (let i = 0; i < n; i++)
-    if (hu[i] >= seedT) {
+    if (hu[i] >= seedT && !(metal && metal[i])) {
       seeds[i] = 1;
       seedCount++;
     }
@@ -122,7 +124,7 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
   const voxelVol = intensity.spacing[0] * intensity.spacing[1] * intensity.spacing[2];
   let teeth: Uint8Array = new Uint8Array(n);
   if (seedCount > 0) {
-    teeth = growFrom(seeds, (i) => hu[i] >= lowT, dims, Math.round(14 / voxelMm));
+    teeth = growFrom(seeds, (i) => hu[i] >= lowT && !(metal && metal[i]), dims, Math.round(14 / voxelMm));
     // descarta grupos pequenos demais para serem dentes (ruído, calcificações)
     const cc = components(teeth, dims);
     const minVox = 15 / (intensity.spacing[0] * intensity.spacing[1] * intensity.spacing[2]);
@@ -161,6 +163,15 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
       if (z < bzMin) bzMin = z;
       if (z > bzMax) bzMax = z;
     }
+  // plano oclusal aproximado: altura média dos dentes. O corpo da mandíbula fica abaixo dele;
+  // a maxila (palato, processo alveolar) fica acima — evita chamar a maxila de mandíbula quando
+  // a mandíbula não está no exame
+  let teethZ = NaN;
+  if (teethCount) {
+    let zsum = 0;
+    for (let i = 0; i < n; i++) if (teeth[i]) zsum += (i / plane) | 0;
+    teethZ = zsum / teethCount;
+  }
   const widthX = Math.max(1, bxMax - bxMin);
   const heightZ = Math.max(1, bzMax - bzMin);
   const depthY = Math.max(1, byMax - byMin);
@@ -204,8 +215,9 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
       const lowestRel = zSup ? (s.zMin - bzMin) / heightZ : (bzMax - s.zMax) / heightZ;
       const yRel = (s.ySum / cc.sizes[l] - byMin) / depthY;
       const anterior = yPost ? yRel < 0.6 : yRel > 0.4;
-      const plausible = volumeMm3 > 10000 && volumeMm3 < 110000 && heightMm > 20;
-      if (span > 0.35 && relHeight < 0.4 && lowestRel < 0.12 && anterior && plausible && cc.sizes[l] > bestSize) {
+      const plausible = volumeMm3 > 10000 && volumeMm3 < 110000 && heightMm > 30;
+      const belowTeeth = Number.isNaN(teethZ) || (zSup ? zMean < teethZ : zMean > teethZ);
+      if (span > 0.35 && relHeight < 0.4 && lowestRel < 0.12 && anterior && plausible && belowTeeth && cc.sizes[l] > bestSize) {
         bestSize = cc.sizes[l];
         mandibleLabel = l;
       }
@@ -240,32 +252,15 @@ export function segmentBone(rec: ReconResult, threshold: number, calibratedHU: b
     notes.push('Mandíbula não separada: não aparece inteira na área do exame ou está unida à maxila/crânio nos dados disponíveis.');
   }
   for (let i = 0; i < n; i++) if (teeth[i]) labels[i] = 3;
+  if (metal) for (let i = 0; i < n; i++) if (metal[i]) labels[i] = 4;
 
-  // ---- campos por estrutura (mantém a forma suave do campo original nas bordas externas) ----
-  const keys: [SegmentKey, number][] = [
-    ['cranio', 1],
-    ['mandibula', 2],
-    ['dentes', 3],
-  ];
-  const fields: SegmentationResult['fields'] = [];
-  const stats: SegmentationResult['stats'] = [];
-  for (const [key, id] of keys) {
-    let count = 0;
-    const data = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      if (labels[i] === id) {
-        count++;
-        data[i] = id === 3 ? Math.max(0.01, hu[i] - lowT + 1) : Math.max(0.01, field[i]);
-      } else data[i] = -0.01 - Math.abs(field[i]) * 0.05;
-    }
-    if (count) {
-      fields.push({ key, data });
-      stats.push({ key, volumeMm3: count * voxelVol });
-    }
-  }
+  const counts = new Float64Array(5);
+  for (let i = 0; i < n; i++) counts[labels[i]]++;
+  const stats: SegmentationResult['stats'] = (Object.keys(LABEL_IDS) as SegmentKey[])
+    .filter((k) => counts[LABEL_IDS[k]] > 0)
+    .map((k) => ({ key: k, volumeMm3: counts[LABEL_IDS[k]] * voxelVol }));
   notes.push(
-    'Segmentação automática por regras de densidade e forma (não é rede neural treinada). Confira as bordas nos cortes; o canal mandibular não é segmentado.',
+    'Segmentação automática por regras de densidade e forma (não é rede neural treinada). Para separar maxila, zigomáticos, ossos nasais e outras estruturas, use Separar por toque ou Cortar pelo plano. Confira as bordas nos cortes.',
   );
-  return { labels, fields, notes, stats };
+  return { labels, notes, stats, teethLow: lowT };
 }
-

@@ -877,6 +877,40 @@ input[type='text'] {
   margin: 6px 0 6px;
 }
 
+.seg-editor {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+button.armed {
+  border-color: var(--mid);
+  color: var(--mid);
+}
+
+#metal-toggle[aria-pressed='true'] {
+  border-color: #f0b429;
+  color: #f0b429;
+}
+
+.metal-kind {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #f0b429;
+  border: 1px solid color-mix(in srgb, #f0b429 60%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex: none;
+}
+
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

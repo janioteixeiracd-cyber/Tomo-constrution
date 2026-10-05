@@ -3,13 +3,12 @@ import { fmt } from './core/math';
 import { meshToStl, type Mesh } from './core/mesh';
 import { isCbctVendor } from './core/quality';
 import { suggestThreshold } from './core/threshold';
-import type { BuiltVolume, InterpolationMethod, ReconOptions, SeriesSummary } from './core/types';
-import { ProcessingClient } from './ui/client';
+import type { BuiltVolume, InterpolationMethod, ReconOptions, SeriesSummary, Vec3 } from './core/types';
+import { ProcessingClient, type LayerOut, type ReconResponse } from './ui/client';
 import { EnhancePanel } from './ui/enhance-ui';
 import { MprState, MprView, type Tool } from './ui/mpr';
 import { dataUrlToBlob, saveFile } from './ui/save';
 import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, SurfaceLayer, View3D, VolumePreset } from './ui/view3d';
-import type { SegmentKey } from './core/segment';
 import { PanoPanel } from './ui/pano-ui';
 import { planReconstruction, type ReconPlan } from './core/plan';
 import { canvasToJpeg, claudeHostSample, describeCase, describeError, type CaseImage } from './ui/ai';
@@ -294,6 +293,7 @@ function setupMpr(b: BuiltVolume) {
   mprState = new MprState(b.volume);
   mprState.window = b.window && b.window.width > 1000 ? { ...b.window } : { center: 500, width: 2500 };
   mprState.tool = ($('#tools .on') as HTMLElement | null)?.dataset.tool as Tool ?? 'navegar';
+  $('#metal-toggle').setAttribute('aria-pressed', 'false');
   views = (['axial', 'coronal', 'sagittal'] as const).map((p) => new MprView($(`#view-${p}`), p, mprState!));
   views[0].setFocus();
   showStudy(b);
@@ -401,6 +401,10 @@ async function ensureView3d() {
     view3d = new View3D($('#view3d'));
     view3d.setMode(renderMode);
     view3d.onMeasurementsChange = renderMeasures;
+    view3d.onPick = onPick;
+    view3d.onPickMiss = () => {
+      if (armedSplit) $('#seg-hint').textContent = 'O toque não acertou nenhuma superfície visível. Toque sobre o osso, do lado que o plano deixa à mostra.';
+    };
   }
   return view3d;
 }
@@ -415,17 +419,22 @@ async function runRecon() {
   const opts = reconOptions(built);
   try {
     const iterations = opts.smoothing > 0 ? (built.volume.spacing[2] > 3 ? 30 : 15) : 0;
-    const res = await client.recon(opts, Number($<HTMLSelectElement>('#detail').value), iterations, (m) => {
+    const calibrated = !isCbctVendor(built.study.manufacturer);
+    const res = await client.recon(opts, Number($<HTMLSelectElement>('#detail').value), iterations, calibrated, (m) => {
       busy.querySelector('span')!.textContent = m;
     });
     if (token !== reconToken) return;
     busy.querySelector('span')!.textContent = 'Desenhando…';
     const v = await ensureView3d();
     v.setVolume(res.intensity, opts.threshold);
-    v.setMesh(res.mesh);
     lastMesh = res.mesh;
-    segLayers = null;
-    $('#layers-card').hidden = true;
+    layerVolumes = new Map();
+    segLayers = [{ key: 'osso', name: 'Osso', color: COLORS.osso, mesh: res.mesh, visible: true }];
+    if (res.metal) segLayers.push({ key: 'metal', name: 'Metal (placas, parafusos, restaurações)', color: COLORS.metal, mesh: res.metal.mesh, visible: true });
+    v.setSurfaces(segLayers);
+    segmented = false;
+    renderLayers();
+    renderMetal(res.metal);
     $<HTMLButtonElement>('#segment-btn').disabled = !res.mesh.triangles.length;
     v.setCamera($<HTMLSelectElement>('#camera-view').value as CameraView);
     $('#view3d-empty').hidden = true;
@@ -545,6 +554,7 @@ const MEASURE_HINT: Record<MeasureTool, string> = {
   distancia: 'Toque em 2 pontos do osso.',
   angulo: 'Toque em 3 pontos; o segundo é o vértice do ângulo.',
   ponto: 'Toque para marcar um ponto de referência.',
+  selecionar: '',
 };
 $$('[data-measure]').forEach((btn) =>
   btn.addEventListener('click', async () => {
@@ -583,12 +593,45 @@ function renderMeasures(list: Measurement[], pendingCount: number) {
 }
 $('#measures-clear').addEventListener('click', () => view3d?.clearMeasurements());
 
-// ---------- segmentação ----------
-const SEG_STYLE: Record<SegmentKey, { name: string; color: readonly [number, number, number] }> = {
-  cranio: { name: 'Crânio e maxila', color: [0.93, 0.89, 0.8] },
-  mandibula: { name: 'Mandíbula', color: [0.55, 0.75, 0.95] },
-  dentes: { name: 'Dentes / restaurações', color: [1, 0.98, 0.9] },
+// ---------- segmentação e metal ----------
+const COLORS = {
+  osso: [0.93, 0.89, 0.8] as const,
+  metal: [1, 0.74, 0.18] as const,
 };
+const LABEL_COLORS: Record<number, readonly [number, number, number]> = {
+  1: [0.93, 0.89, 0.8],
+  2: [0.55, 0.75, 0.95],
+  3: [1, 0.98, 0.9],
+  4: [1, 0.74, 0.18],
+};
+// cores das estruturas criadas pelo usuário (distintas entre si e do osso, dos dentes e do metal)
+const USER_COLORS: (readonly [number, number, number])[] = [
+  [0.6, 0.83, 0.55],
+  [0.78, 0.62, 0.92],
+  [0.95, 0.6, 0.45],
+  [0.45, 0.82, 0.78],
+  [0.93, 0.55, 0.68],
+  [0.9, 0.85, 0.45],
+  [0.55, 0.6, 0.95],
+  [0.75, 0.75, 0.75],
+];
+const colorFor = (id: number) => LABEL_COLORS[id] ?? USER_COLORS[(id - 10) % USER_COLORS.length];
+let layerVolumes = new Map<string, number>();
+let segmented = false;
+
+function applyLayers(list: LayerOut[]) {
+  const incoming = list.map((l) => {
+    layerVolumes.set(String(l.id), l.volumeMm3);
+    return { key: String(l.id), name: l.name, color: colorFor(l.id), mesh: l.mesh, visible: true };
+  });
+  const byKey = new Map((segLayers ?? []).map((l) => [l.key, l]));
+  for (const l of incoming) {
+    const prev = byKey.get(l.key);
+    byKey.set(l.key, prev ? { ...l, visible: prev.visible } : l);
+  }
+  segLayers = [...byKey.values()].filter((l) => l.mesh.triangles.length);
+  return incoming;
+}
 
 $('#segment-btn').addEventListener('click', async () => {
   if (!built) return;
@@ -600,13 +643,13 @@ $('#segment-btn').addEventListener('click', async () => {
     const res = await client.segment(!isCbctVendor(built.study.manufacturer), Number(smoothingInput.value) > 0 ? 12 : 0, (m) => {
       busy.querySelector('span')!.textContent = m;
     });
-    const stats = new Map(res.stats.map((s) => [s.key, s.volumeMm3]));
-    segLayers = res.meshes
-      .filter((m) => m.mesh.triangles.length)
-      .map((m) => ({ key: m.key, name: SEG_STYLE[m.key].name, color: SEG_STYLE[m.key].color, mesh: m.mesh, visible: true }));
+    segLayers = [];
+    layerVolumes = new Map();
+    applyLayers(res.layers);
+    segmented = true;
     const v = await ensureView3d();
     v.setSurfaces(segLayers);
-    renderLayers(stats);
+    renderLayers();
     const notes = $('#recon-notes');
     for (const n of res.notes) {
       const li = document.createElement('li');
@@ -621,10 +664,11 @@ $('#segment-btn').addEventListener('click', async () => {
   }
 });
 
-function renderLayers(stats: Map<SegmentKey, number>) {
+function renderLayers() {
   const ul = $('#layers-list');
   ul.innerHTML = '';
   $('#layers-card').hidden = !segLayers?.length;
+  $('#seg-editor').hidden = !segmented;
   for (const layer of segLayers ?? []) {
     const li = document.createElement('li');
     const box = document.createElement('input');
@@ -641,20 +685,142 @@ function renderLayers(stats: Map<SegmentKey, number>) {
     const label = document.createElement('label');
     label.className = 'grow';
     label.htmlFor = box.id;
-    const vol = stats.get(layer.key as SegmentKey);
+    const vol = layerVolumes.get(layer.key);
     label.innerHTML = '<span></span> <small></small>';
     label.querySelector('span')!.textContent = layer.name;
     label.querySelector('small')!.textContent = vol ? `${fmt(vol / 1000, 1)} cm³` : '';
     const stl = document.createElement('button');
     stl.className = 'ghost small';
     stl.textContent = 'STL';
+    const fileKey = layer.name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .toLowerCase();
     stl.addEventListener('click', async () =>
-      reportSave(await saveFile(`${baseName()}-${layer.key}.stl`, new Blob([meshToStl(layer.mesh)], { type: 'model/stl' }))),
+      reportSave(await saveFile(`${baseName()}-${fileKey}.stl`, new Blob([meshToStl(layer.mesh)], { type: 'model/stl' }))),
     );
     li.append(box, sw, label, stl);
     ul.append(li);
   }
 }
+
+// ---- editor de estruturas ----
+let armedSplit: 'seed' | 'plane' | null = null;
+const segName = $<HTMLSelectElement>('#seg-name');
+segName.addEventListener('change', () => ($('#seg-other').hidden = segName.value !== '__outra'));
+
+function disarm(message?: string) {
+  armedSplit = null;
+  $('#seg-touch').classList.remove('armed');
+  $('#seg-plane').classList.remove('armed');
+  $('#seg-cancel').hidden = true;
+  view3d?.setTool('girar');
+  $$('[data-measure]').forEach((b) => b.classList.toggle('on', b.dataset.measure === 'girar'));
+  if (message) $('#seg-hint').textContent = message;
+}
+
+async function arm(mode: 'seed' | 'plane') {
+  const v = await ensureView3d();
+  if (renderMode !== 'superficie') $<HTMLButtonElement>('[data-mode="superficie"]').click();
+  if (mode === 'plane' && !v.getClipPlane()) {
+    $('#seg-hint').textContent = 'Primeiro escolha um "Corte do modelo" (sagital, coronal ou axial) e mova o plano até onde quer cortar. Depois toque em "Cortar pelo plano".';
+    return;
+  }
+  armedSplit = mode;
+  $('#seg-touch').classList.toggle('armed', mode === 'seed');
+  $('#seg-plane').classList.toggle('armed', mode === 'plane');
+  $('#seg-cancel').hidden = false;
+  $$('[data-measure]').forEach((b) => b.classList.remove('on'));
+  v.setTool('selecionar');
+  $('#seg-hint').textContent =
+    mode === 'seed' ? 'Toque na estrutura que deseja separar.' : 'Toque na parte visível (do lado do plano) que vai virar a nova estrutura.';
+}
+$('#seg-touch').addEventListener('click', () => arm('seed'));
+$('#seg-plane').addEventListener('click', () => arm('plane'));
+$('#seg-cancel').addEventListener('click', () => disarm('Edição cancelada.'));
+
+async function onPick(point: Vec3) {
+  if (!armedSplit || !view3d) return;
+  const mode = armedSplit;
+  const name = segName.value === '__outra' ? $<HTMLInputElement>('#seg-other').value.trim() || 'Estrutura' : segName.value;
+  const plane = view3d.getClipPlane();
+  disarm();
+  const busy = $('#busy3d');
+  busy.hidden = false;
+  try {
+    const res = await client.split(
+      { mode, point, planeOrigin: plane?.origin, planeNormal: plane?.normal, name, smoothIterations: Number(smoothingInput.value) > 0 ? 12 : 0 },
+      (m) => (busy.querySelector('span')!.textContent = m),
+    );
+    if (!res.ok) {
+      $('#seg-hint').textContent = res.message;
+      return;
+    }
+    applyLayers(res.layers);
+    view3d.setSurfaces(segLayers!);
+    renderLayers();
+    $('#seg-hint').textContent = `"${name}" criada. ${res.message}`;
+  } catch (e) {
+    $('#seg-hint').textContent = `Falha: ${(e as Error).message}`;
+  } finally {
+    busy.hidden = true;
+  }
+}
+
+// ---- metal ----
+const KIND_NAMES = { parafuso: 'Parafuso/pino', placa: 'Placa', restauracao: 'Restauração', fragmento: 'Peça metálica' } as const;
+
+function renderMetal(metal: ReconResponse['metal']) {
+  const card = $('#metal-card');
+  const toggle = $<HTMLButtonElement>('#metal-toggle');
+  card.hidden = !metal;
+  toggle.disabled = !metal;
+  if (mprState) {
+    mprState.metalThreshold = metal ? metal.seed : null;
+    mprState.emit();
+  }
+  if (!metal) return;
+  const counts = { parafuso: 0, placa: 0, restauracao: 0, fragmento: 0 };
+  for (const o of metal.objects) counts[o.kind]++;
+  $('#metal-summary').textContent =
+    `${metal.objects.length} peça(s): ${counts.parafuso} parafuso(s)/pino(s), ${counts.placa} placa(s), ${counts.restauracao} restauração(ões), ${counts.fragmento} outra(s). ` +
+    'Medidas pelos eixos principais de cada peça; o brilho do metal na tomografia aumenta um pouco o tamanho aparente.';
+  const ul = $('#metal-list');
+  ul.innerHTML = '';
+  const order = { parafuso: 0, placa: 1, fragmento: 2, restauracao: 3 };
+  for (const o of [...metal.objects].sort((a, b) => order[a.kind] - order[b.kind] || b.length - a.length)) {
+    const li = document.createElement('li');
+    const kind = document.createElement('span');
+    kind.className = 'metal-kind';
+    kind.textContent = KIND_NAMES[o.kind];
+    const txt = document.createElement('span');
+    txt.className = 'grow';
+    const size =
+      o.kind === 'parafuso'
+        ? `${fmt(o.length, 1)} mm de comprimento × ${fmt(o.width, 1)} mm`
+        : `${fmt(o.length, 1)} × ${fmt(o.width, 1)} × ${fmt(o.thickness, 1)} mm`;
+    txt.innerHTML = '<span></span><br /><small></small>';
+    txt.querySelector('span')!.textContent = `${size}`;
+    txt.querySelector('small')!.textContent = o.location;
+    const see = document.createElement('button');
+    see.className = 'ghost small';
+    see.textContent = 'Ver';
+    see.addEventListener('click', async () => {
+      showTab('tresd');
+      (await ensureView3d()).focusOn(o.center, o.length);
+    });
+    li.append(kind, txt, see);
+    ul.append(li);
+  }
+}
+
+$('#metal-toggle').addEventListener('click', () => {
+  if (!mprState) return;
+  mprState.showMetal = !mprState.showMetal;
+  $('#metal-toggle').setAttribute('aria-pressed', String(mprState.showMetal));
+  mprState.emit();
+});
 
 // ---------- análise por IA ----------
 const KEY_STORE = 'tomorecon.anthropicKey';

@@ -1,6 +1,6 @@
 import type { InputFile } from '../core/dicom';
 import type { Mesh } from '../core/mesh';
-import type { SegmentKey } from '../core/segment';
+import type { MetalObject } from '../core/metal';
 import type { BuiltVolume, ReconOptions, SeriesSummary, Vec3, Volume } from '../core/types';
 
 export interface ParseResponse {
@@ -9,16 +9,30 @@ export interface ParseResponse {
   best: string | null;
 }
 
+export interface LayerOut {
+  id: number;
+  name: string;
+  base: 'bone' | 'teeth' | 'metal';
+  mesh: Mesh;
+  volumeMm3: number;
+}
+
 export interface SegmentResponse {
-  meshes: { key: SegmentKey; mesh: Mesh }[];
+  layers: LayerOut[];
   notes: string[];
-  stats: { key: SegmentKey; volumeMm3: number }[];
+}
+
+export interface SplitResponse {
+  ok: boolean;
+  message: string;
+  layers: LayerOut[];
 }
 
 export interface ReconResponse {
   intensity: Volume;
   notes: string[];
   mesh: Mesh;
+  metal: { mesh: Mesh; objects: MetalObject[]; seed: number; low: number } | null;
 }
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; onProgress?: (m: string) => void };
@@ -65,7 +79,14 @@ export class ProcessingClient {
     return this.call<SegmentResponse>({ type: 'segment', calibratedHU, smoothIterations }, onProgress);
   }
 
-  recon(options: ReconOptions, maxVoxels: number, smoothIterations: number, onProgress?: (m: string) => void) {
-    return this.call<ReconResponse>({ type: 'recon', options, maxVoxels, smoothIterations }, onProgress);
+  recon(options: ReconOptions, maxVoxels: number, smoothIterations: number, calibratedHU: boolean, onProgress?: (m: string) => void) {
+    return this.call<ReconResponse>({ type: 'recon', options, maxVoxels, smoothIterations, calibratedHU }, onProgress);
+  }
+
+  split(
+    req: { mode: 'seed' | 'plane'; point: Vec3; planeOrigin?: Vec3; planeNormal?: Vec3; name: string; smoothIterations: number },
+    onProgress?: (m: string) => void,
+  ) {
+    return this.call<SplitResponse>({ type: 'split', ...req }, onProgress);
   }
 }

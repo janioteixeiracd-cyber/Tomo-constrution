@@ -80,6 +80,7 @@
             <button data-wl="-600,1600">Seios/ar</button>
             <button data-wl="1000,4000">Dentes/metal</button>
           </div>
+          <button id="metal-toggle" class="ghost" aria-pressed="false" disabled title="Pinta em dourado o que tem densidade de metal">Destacar metal</button>
           <button id="clear-annot" class="ghost">Limpar medidas</button>
           <button id="layout-toggle" class="ghost">1 / 3 vistas</button>
         </div>
@@ -176,6 +177,39 @@
           <section class="card" id="layers-card" hidden>
             <h2>Estruturas</h2>
             <ul id="layers-list" class="layers"></ul>
+            <div class="seg-editor" id="seg-editor" hidden>
+              <label class="stack">Nova estrutura
+                <select id="seg-name">
+                  <option>Maxila</option>
+                  <option>Zigomático direito</option>
+                  <option>Zigomático esquerdo</option>
+                  <option>Ossos nasais</option>
+                  <option>Frontal</option>
+                  <option>Órbita direita</option>
+                  <option>Órbita esquerda</option>
+                  <option>Arco zigomático direito</option>
+                  <option>Arco zigomático esquerdo</option>
+                  <option>Côndilo direito</option>
+                  <option>Côndilo esquerdo</option>
+                  <option>Mandíbula</option>
+                  <option>Fragmento ósseo</option>
+                  <option>Vértebras cervicais</option>
+                  <option value="__outra">Outra…</option>
+                </select>
+              </label>
+              <input type="text" id="seg-other" placeholder="Nome da estrutura" hidden />
+              <div class="row wrap">
+                <button id="seg-touch" class="ghost">Separar por toque</button>
+                <button id="seg-plane" class="ghost">Cortar pelo plano</button>
+                <button id="seg-cancel" class="ghost" hidden>Cancelar</button>
+              </div>
+              <p class="hint" id="seg-hint">Separar por toque: solta a parte tocada pelas ligações ósseas mais finas. Cortar pelo plano: use "Corte do modelo" para posicionar o plano e toque na parte visível que vira a nova estrutura.</p>
+            </div>
+          </section>
+          <section class="card" id="metal-card" hidden>
+            <h2>Material metálico</h2>
+            <p class="hint" id="metal-summary"></p>
+            <ul id="metal-list" class="measures"></ul>
           </section>
           <section class="card" id="measures-card" hidden>
             <h2>Medidas <button id="measures-clear" class="ghost small">Limpar</button></h2>

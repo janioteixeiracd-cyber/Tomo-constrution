@@ -12,6 +12,9 @@ export class MprState {
   cursor: [number, number, number];
   window = { center: 400, width: 2000 };
   tool: Tool = 'navegar';
+  /** pinta em dourado os pixels com densidade de metal (≥ limiar) */
+  metalThreshold: number | null = null;
+  showMetal = false;
   private listeners = new Set<() => void>();
 
   constructor(public volume: Volume) {
@@ -149,6 +152,8 @@ export class MprView {
     const plane = nx * ny;
     const d = vol.data;
     const c = this.state.cursor;
+    const metal = this.state.showMetal && this.state.metalThreshold != null;
+    const metalT = this.state.metalThreshold ?? Infinity;
     for (let v = 0; v < g.h; v++) {
       let rowBase0 = 0;
       let rowBase1 = 0;
@@ -173,7 +178,13 @@ export class MprView {
         let gray = (val - lo) * scale;
         gray = gray < 0 ? 0 : gray > 255 ? 255 : gray;
         const o = (v * g.w + u) * 4;
-        px[o] = px[o + 1] = px[o + 2] = gray;
+        if (metal && val >= metalT) {
+          px[o] = 255;
+          px[o + 1] = 190;
+          px[o + 2] = 40;
+        } else {
+          px[o] = px[o + 1] = px[o + 2] = gray;
+        }
         px[o + 3] = 255;
       }
     }

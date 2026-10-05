@@ -9,7 +9,7 @@ Aplicação web para **estudo de casos de cirurgia bucomaxilofacial**: abre tomo
 | Aba | Recursos |
 | --- | --- |
 | **Cortes** | Axial, coronal e sagital sincronizados; janelas Osso, Partes moles, Seios/ar e Dentes/metal; ajuste de janela por arraste; régua em mm; leitura de densidade (HU). |
-| **3D** | Superfície óssea (malha) ou renderização volumétrica (Osso, Osso + pele, Pele); vistas padrão; corte do modelo por plano; **medidas no modelo** (distância, ângulo, pontos de referência); **segmentação** de crânio/maxila, mandíbula e dentes com STL de cada estrutura; exportação **STL** e PNG. |
+| **3D** | Superfície óssea (malha) ou renderização volumétrica (Osso, Osso + pele, Pele); vistas padrão; corte do modelo por plano; **medidas no modelo** (distância, ângulo, pontos de referência); **metal** (placas, parafusos, pinos, restaurações) separado do osso em dourado, com a lista das peças e suas medidas; **segmentação** automática (crânio/face, mandíbula, dentes, metal) e **editor de estruturas** (separar por toque, cortar pelo plano) para maxila, zigomáticos, ossos nasais etc., com STL de cada uma; exportação **STL** e PNG. |
 | **Panorâmica** | Toque pontos ao longo do arco no axial para gerar a **panorâmica reconstruída** (média ou MIP, espessura ajustável) e **cortes transversais** com régua para altura e espessura óssea. |
 | **Imagem 2D** | Para radiografias, fotos do negatoscópio e capturas de tela: redução de ruído, contraste local (CLAHE), nitidez, brilho/contraste/gama, negativo, comparação antes/depois e download. |
 | **Análise IA** | Descrição educacional do caso pelo Claude a partir de imagens **anonimizadas** (cortes, 3D, panorâmica) e dados técnicos, com prévia exata do que é enviado. No claude.ai usa a conta do usuário; no site próprio pede uma chave de API da Anthropic. |
@@ -60,6 +60,7 @@ Site publicado: https://janioteixeiracd-cyber.github.io/Tomo-constrution/ (branc
 
 ### Limites conhecidos
 
-- **Segmentação** é por regras de densidade e forma, não por rede neural treinada. Os dentes são identificados a partir do esmalte e das restaurações (as densidades mais altas). A mandíbula só é separada quando aparece inteira e se destaca do crânio por erosão. O canal mandibular não é segmentado.
+- **Segmentação automática** é por regras de densidade e forma, não por rede neural treinada. Os dentes partem do esmalte; o metal (≥ 3000 HU em TC) tem camada própria. A mandíbula só é separada quando aparece inteira, se destaca do crânio por erosão e fica abaixo do plano oclusal. Os ossos unidos por suturas (maxila, zigomático, nasais) são separados pelo usuário com **Separar por toque** (erosão local até a parte tocada se soltar) ou **Cortar pelo plano**. O canal mandibular não é segmentado.
+- **Metal**: as medidas de cada peça vêm dos eixos principais; o brilho do metal na tomografia aumenta um pouco o tamanho aparente. Perto das peças, só osso denso entra no modelo, para reduzir o "falso osso" dos artefatos. Em CBCT, o metal só é procurado quando há um pico de densidade separado do osso.
 - **Medidas** em exames de cortes espessos herdam a imprecisão da interpolação. O aviso de qualidade indica quando isso acontece.
 - **Análise por IA** é educacional e pode errar. Nenhum nome, ID ou data é enviado, mas o contexto digitado pelo usuário vai junto com as imagens.

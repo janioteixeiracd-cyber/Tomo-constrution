@@ -24,7 +24,7 @@ export type RenderMode = 'superficie' | 'volume';
 export type VolumePreset = 'osso' | 'osso-pele' | 'pele';
 export type CameraView = 'frontal' | 'direita' | 'esquerda' | 'superior' | 'inferior' | 'posterior';
 export type ClipAxis = 'nenhum' | 'sagital' | 'coronal' | 'axial';
-export type MeasureTool = 'girar' | 'distancia' | 'angulo' | 'ponto';
+export type MeasureTool = 'girar' | 'distancia' | 'angulo' | 'ponto' | 'selecionar';
 
 export interface SurfaceLayer {
   key: string;
@@ -37,7 +37,7 @@ export interface SurfaceLayer {
 
 export interface Measurement {
   id: number;
-  kind: Exclude<MeasureTool, 'girar'>;
+  kind: Exclude<MeasureTool, 'girar' | 'selecionar'>;
   points: Vec3[];
   /** texto do resultado (ex.: "23,4 mm", "112,5°", "P1") */
   label: string;
@@ -71,6 +71,10 @@ export class View3D {
   private nextId = 1;
   private landmarkCount = 0;
   onMeasurementsChange: (list: Measurement[], pendingCount: number) => void = () => {};
+  /** chamado com o ponto tocado quando a ferramenta é "selecionar" */
+  onPick: (point: Vec3) => void = () => {};
+  /** toque que não acertou nenhuma superfície (com a ferramenta "selecionar") */
+  onPickMiss: () => void = () => {};
   private volumeActor = vtkVolume.newInstance();
   private volumeMapper = vtkVolumeMapper.newInstance();
   private clipPlane = vtkPlane.newInstance();
@@ -295,6 +299,35 @@ export class View3D {
     this.rebuildMeasureActors();
   }
 
+  /** Plano de corte atual (origem e normal), se houver. */
+  getClipPlane(): { origin: Vec3; normal: Vec3 } | null {
+    if (this.clip.axis === 'nenhum' || !this.bounds) return null;
+    const o = this.clipPlane.getOrigin();
+    const n = this.clipPlane.getNormal();
+    return { origin: [o[0], o[1], o[2]], normal: [n[0], n[1], n[2]] };
+  }
+
+  /** Atualiza só as camadas indicadas (mesmo id), mantendo cor e visibilidade das demais. */
+  upsertSurfaces(list: SurfaceLayer[]) {
+    const byKey = new Map(this.layers.map((l) => [l.layer.key, l.layer]));
+    for (const l of list) byKey.set(l.key, l);
+    this.setSurfaces([...byKey.values()]);
+  }
+
+  /** Aproxima a câmera de um ponto (ex.: um parafuso), mantendo a direção de visão. */
+  focusOn(center: Vec3, radiusMm: number) {
+    const cam = this.renderer.getActiveCamera();
+    const pos = cam.getPosition();
+    const fp = cam.getFocalPoint();
+    const dir = [pos[0] - fp[0], pos[1] - fp[1], pos[2] - fp[2]];
+    const len = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const dist = Math.max(25, radiusMm * 6);
+    cam.setFocalPoint(center[0], center[1], center[2]);
+    cam.setPosition(center[0] + (dir[0] / len) * dist, center[1] + (dir[1] / len) * dist, center[2] + (dir[2] / len) * dist);
+    this.renderer.resetCameraClippingRange();
+    this.render();
+  }
+
   getMeasurements() {
     return this.measurements;
   }
@@ -324,7 +357,12 @@ export class View3D {
       down = null;
       if (moved > 6 || !quick) return;
       const p = this.pickAt(e.clientX, e.clientY);
-      if (p) this.addPoint(p);
+      if (!p) {
+        if (this.tool === 'selecionar') this.onPickMiss();
+        return;
+      }
+      if (this.tool === 'selecionar') this.onPick(p);
+      else this.addPoint(p);
     });
   }
 

@@ -68,13 +68,13 @@ describe('segmentação', () => {
     const hu = new Int16Array(N ** 3).fill(-1000);
     const set = (x: number, y: number, z: number, v: number) => (hu[z * N * N + y * N + x] = v);
     // "crânio": bloco grande superior
-    for (let z = 30; z < 60; z++) for (let y = 8; y < 56; y++) for (let x = 8; x < 56; x++) set(x, y, z, 1000);
-    // "mandíbula": bloco largo inferior (~36 cm³, 26 mm de altura), separado por 3 voxels e
+    for (let z = 37; z < 63; z++) for (let y = 8; y < 56; y++) for (let x = 8; x < 56; x++) set(x, y, z, 1000);
+    // "mandíbula": bloco largo inferior (~45 cm³, 33 mm de altura), separado por 3 voxels e
     // ligado ao crânio por uma ponte fina (como a ATM)
-    for (let z = 1; z < 27; z++) for (let y = 6; y < 33; y++) for (let x = 6; x < 58; x++) set(x, y, z, 900);
-    for (let z = 27; z < 30; z++) set(30, 15, z, 900);
-    // "dentes": esmalte no topo da mandíbula
-    for (let z = 22; z < 26; z++) for (let y = 12; y < 18; y++) for (let x = 20; x < 44; x += 6) for (let d = 0; d < 3; d++) set(x + d, y, z, 2800);
+    for (let z = 1; z < 34; z++) for (let y = 6; y < 33; y++) for (let x = 6; x < 58; x++) set(x, y, z, 900);
+    for (let z = 34; z < 37; z++) set(30, 15, z, 900);
+    // "dentes": esmalte no topo da mandíbula (plano oclusal acima do corpo da mandíbula)
+    for (let z = 29; z < 33; z++) for (let y = 12; y < 18; y++) for (let x = 20; x < 44; x += 6) for (let d = 0; d < 3; d++) set(x + d, y, z, 2800);
     const field = new Float32Array(hu.length);
     for (let i = 0; i < hu.length; i++) field[i] = hu[i] - 200;
     const vol: Volume = { dims, spacing: [1, 1, 1], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1], data: hu };
@@ -83,8 +83,8 @@ describe('segmentação', () => {
     const keys = seg.stats.map((s) => s.key);
     expect(keys).toEqual(['cranio', 'mandibula', 'dentes']);
     expect(seg.labels[15 * N * N + 15 * N + 10]).toBe(2); // mandíbula
-    expect(seg.labels[45 * N * N + 30 * N + 30]).toBe(1); // crânio
-    expect(seg.labels[24 * N * N + 15 * N + 21]).toBe(3); // dente
+    expect(seg.labels[50 * N * N + 30 * N + 30]).toBe(1); // crânio
+    expect(seg.labels[31 * N * N + 15 * N + 21]).toBe(3); // dente
   });
 
   it('não chama de mandíbula uma peça que não chega ao ponto mais baixo do osso', () => {
