@@ -1,3 +1,4 @@
+import { saveFile } from './save';
 import { DEFAULT_ENHANCE, enhance, grayToRgba, toGray, type EnhanceOptions, type Gray } from '../core/enhance2d';
 
 const MAX_SIDE = 2000;
@@ -58,9 +59,10 @@ export class EnhancePanel {
     this.fileName = file.name.replace(/\.[^.]+$/, '') || 'imagem';
     const bitmap = await createImageBitmap(file).catch(() => null);
     if (!bitmap) {
-      alert('Não foi possível abrir esta imagem. Use JPG, PNG ou WEBP (fotos HEIC do iPhone: exporte como JPG).');
+      this.message('Não foi possível abrir esta imagem. Use JPG, PNG ou WEBP (fotos HEIC do iPhone: exporte como JPG).');
       return;
     }
+    this.message(null);
     const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
     const w = Math.round(bitmap.width * scale);
     const h = Math.round(bitmap.height * scale);
@@ -131,11 +133,15 @@ export class EnhancePanel {
     }
   }
 
-  private download() {
+  private async download() {
     if (!this.result) return;
-    const a = document.createElement('a');
-    a.href = this.after.toDataURL('image/png');
-    a.download = `${this.fileName}-realcada.png`;
-    a.click();
+    const blob = await new Promise<Blob | null>((res) => this.after.toBlob(res, 'image/png'));
+    if (blob) this.message(await saveFile(`${this.fileName}-realcada.png`, blob));
+  }
+
+  private message(text: string | null) {
+    const el = this.root.querySelector<HTMLElement>('#enh-msg')!;
+    el.hidden = !text;
+    el.textContent = text ?? '';
   }
 }

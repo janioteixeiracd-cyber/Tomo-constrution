@@ -7,6 +7,7 @@ import type { BuiltVolume, InterpolationMethod, ReconOptions, SeriesSummary } fr
 import { ProcessingClient } from './ui/client';
 import { EnhancePanel } from './ui/enhance-ui';
 import { MprState, MprView, type Tool } from './ui/mpr';
+import { dataUrlToBlob, saveFile } from './ui/save';
 import type { CameraView, ClipAxis, RenderMode, View3D, VolumePreset } from './ui/view3d';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -399,28 +400,26 @@ clipAxis.addEventListener('change', applyClip);
 clipPos.addEventListener('input', applyClip);
 clipFlip.addEventListener('change', applyClip);
 
-function download(href: string, name: string) {
-  const a = document.createElement('a');
-  a.href = href;
-  a.download = name;
-  a.click();
-}
-
 function baseName() {
   const s = built?.study;
   const who = s && !patientHidden() && s.patientName ? s.patientName.replace(/\s+/g, '_') + '-' : '';
   return `${who}reconstrucao-ossea`;
 }
 
-$('#export-stl').addEventListener('click', () => {
+function reportSave(err: string | null) {
+  if (!err) return;
+  const li = document.createElement('li');
+  li.textContent = err;
+  $('#recon-notes').prepend(li);
+}
+
+$('#export-stl').addEventListener('click', async () => {
   if (!lastMesh) return;
-  const url = URL.createObjectURL(new Blob([meshToStl(lastMesh)], { type: 'model/stl' }));
-  download(url, `${baseName()}.stl`);
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  reportSave(await saveFile(`${baseName()}.stl`, new Blob([meshToStl(lastMesh)], { type: 'model/stl' })));
 });
 $('#export-png').addEventListener('click', async () => {
   if (!view3d) return;
-  download(await view3d.snapshot(), `${baseName()}.png`);
+  reportSave(await saveFile(`${baseName()}.png`, await dataUrlToBlob(await view3d.snapshot())));
 });
 
 // ---------- imagem 2D ----------
