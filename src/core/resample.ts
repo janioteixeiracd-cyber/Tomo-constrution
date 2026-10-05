@@ -119,18 +119,86 @@ export function gaussian3D(data: Float32Array, dims: Vec3, spacing: Vec3, sigmaM
   return cur;
 }
 
+/** Nível típico das partes moles do exame (mediana dos voxels entre o ar e o limiar ósseo). */
+export function softTissueLevel(data: ArrayLike<number>, threshold: number): number {
+  const sample: number[] = [];
+  const step = Math.max(1, Math.floor(data.length / 400_000));
+  for (let i = 0; i < data.length; i += step) {
+    const v = data[i];
+    if (v > -300 && v < threshold) sample.push(v);
+  }
+  if (!sample.length) return threshold - 200;
+  sample.sort((a, b) => a - b);
+  return sample[sample.length >> 1];
+}
+
+/** Dilatação binária separável (caixa) com raio em voxels por eixo. */
+function dilate(mask: Uint8Array, dims: Vec3, radius: Vec3): Uint8Array {
+  let cur = mask;
+  const strides = [1, dims[0], dims[0] * dims[1]];
+  for (let axis = 0; axis < 3; axis++) {
+    const r = radius[axis];
+    const n = dims[axis];
+    if (r < 1 || n < 2) continue;
+    const stride = strides[axis];
+    const [a1, a2] = [0, 1, 2].filter((a) => a !== axis);
+    const next = new Uint8Array(cur.length);
+    for (let u = 0; u < dims[a2]; u++)
+      for (let v = 0; v < dims[a1]; v++) {
+        const base = u * strides[a2] + v * strides[a1];
+        // distância até o último "1" visto, nos dois sentidos
+        let last = -Infinity;
+        for (let i = 0; i < n; i++) {
+          if (cur[base + i * stride]) last = i;
+          if (i - last <= r) next[base + i * stride] = 1;
+        }
+        last = Infinity;
+        for (let i = n - 1; i >= 0; i--) {
+          if (cur[base + i * stride]) last = i;
+          if (last - i <= r) next[base + i * stride] = 1;
+        }
+      }
+    cur = next;
+  }
+  return cur;
+}
+
+/**
+ * Limiar local: igual ao limiar ósseo longe do osso e mais baixo (até `low`) junto de osso confirmado.
+ * Paredes finas (assoalho de órbita, paredes de seio, septo) têm densidade reduzida pelo volume parcial;
+ * assim elas entram no modelo sem trazer ruído das partes moles.
+ */
+export function thinWallThreshold(data: ArrayLike<number>, dims: Vec3, spacing: Vec3, threshold: number, low: number, radiusMm = 1.5): Float32Array {
+  const strong = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) strong[i] = data[i] >= threshold ? 1 : 0;
+  const radius = spacing.map((sp, a) => (dims[a] > 1 ? Math.max(1, Math.round(radiusMm / sp)) : 0)) as Vec3;
+  const near = dilate(strong, dims, radius);
+  let nearF: Float32Array = new Float32Array(near.length);
+  for (let i = 0; i < near.length; i++) nearF[i] = near[i];
+  nearF = gaussian3D(nearF, dims, spacing, dims.map((d) => (d > 1 ? 0.5 : 0)) as Vec3);
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < out.length; i++) out[i] = threshold - (threshold - low) * Math.min(1, nearF[i]);
+  return out;
+}
+
 /**
  * Interpolação baseada em forma (shape-based): o osso de cada corte vira um mapa de
  * distância com sinal e as distâncias é que são interpoladas entre os cortes.
  * Com cortes espessos isso gera contornos contínuos em vez de "degraus".
  */
-export function shapeBasedField(vol: Volume, threshold: number, targetSpacing: number): Float32Array {
+export function shapeBasedField(vol: Volume, threshold: number, targetSpacing: number, thinWallLow?: number): Float32Array {
   const [nx, ny, nz] = vol.dims;
   const plane = nx * ny;
   const sdf: Float32Array[] = [];
   const mask = new Uint8Array(plane);
   for (let k = 0; k < nz; k++) {
-    for (let i = 0; i < plane; i++) mask[i] = vol.data[k * plane + i] >= threshold ? 1 : 0;
+    const slice = vol.data.subarray(k * plane, (k + 1) * plane);
+    if (thinWallLow != null) {
+      const local = thinWallThreshold(slice, [nx, ny, 1], [vol.spacing[0], vol.spacing[1], 1], threshold, thinWallLow);
+      for (let i = 0; i < plane; i++) mask[i] = slice[i] >= local[i] ? 1 : 0;
+    } else {
+      for (let i = 0; i < plane; i++) mask[i] = slice[i] >= threshold ? 1 : 0;
+    }
     // corte vazio: o osso do vizinho "fecha" em cúpula até a metade do intervalo
     sdf.push(signedDistance2D(mask, nx, ny, vol.spacing[0], vol.spacing[1], 40, -vol.spacing[2] / 2));
   }
@@ -182,12 +250,27 @@ export function reconstruct(source: Volume, opts: ReconOptions, maxVoxels = 24e6
     );
   }
 
+  let thinLow: number | undefined;
+  if (opts.preserveThinWalls) {
+    // limiar baixo a meio caminho entre as partes moles deste exame e o limiar ósseo
+    const soft = softTissueLevel(base.data, opts.threshold);
+    thinLow = soft + 0.5 * (opts.threshold - soft);
+    notes.push(
+      `Paredes finas preservadas: junto do osso o limiar desce até ${Math.round(thinLow)} HU (partes moles deste exame ≈ ${Math.round(soft)} HU).`,
+    );
+  }
+
   let field: Float32Array;
   if (method === 'shape') {
-    field = shapeBasedField(base, opts.threshold, opts.targetSpacing);
+    field = shapeBasedField(base, opts.threshold, opts.targetSpacing, thinLow);
   } else {
     field = new Float32Array(intensity.data.length);
-    for (let i = 0; i < field.length; i++) field[i] = intensity.data[i] - opts.threshold;
+    if (thinLow != null) {
+      const local = thinWallThreshold(intensity.data, intensity.dims, intensity.spacing, opts.threshold, thinLow);
+      for (let i = 0; i < field.length; i++) field[i] = intensity.data[i] - local[i];
+    } else {
+      for (let i = 0; i < field.length; i++) field[i] = intensity.data[i] - opts.threshold;
+    }
   }
   if (opts.smoothing > 0) {
     // cortes espessos: suaviza mais entre os cortes (onde não há informação) para apagar os degraus

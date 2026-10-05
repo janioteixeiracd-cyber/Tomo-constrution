@@ -3,11 +3,14 @@ import { buildVolume, parseFiles, pickBestSeries, summarizeSeries, type InputFil
 import { extractSurface } from './core/mesh';
 import { reconstruct } from './core/resample';
 import { segmentBone } from './core/segment';
+import { fuseVolumes } from './core/fusion';
+import { assessFusedQuality } from './core/quality';
+import type { Vec3 } from './core/types';
 import type { BuiltVolume, ReconOptions, ReconResult } from './core/types';
 
 export type WorkerRequest =
   | { id: number; type: 'parse'; files: InputFile[] }
-  | { id: number; type: 'build'; seriesId: string }
+  | { id: number; type: 'build'; seriesIds: string[]; effective?: Vec3; effectiveGap?: number; maxVoxels?: number }
   | { id: number; type: 'recon'; options: ReconOptions; maxVoxels: number; smoothIterations: number }
   | { id: number; type: 'segment'; calibratedHU: boolean; smoothIterations: number };
 
@@ -29,10 +32,28 @@ ctx.onmessage = (ev: MessageEvent<WorkerRequest>) => {
       const summaries = [...series].map(([id, items]) => summarizeSeries(id, items));
       ctx.postMessage({ id: req.id, result: { summaries, skipped: parsed.skipped, best: pickBestSeries(summaries)?.id ?? null } });
     } else if (req.type === 'build') {
-      const items = series.get(req.seriesId);
-      if (!items) throw new Error('Série não encontrada.');
-      progress(req.id, `Decodificando ${items.length} imagem(ns)…`);
-      current = buildVolume(req.seriesId, items);
+      const groups = req.seriesIds.map((id) => {
+        const items = series.get(id);
+        if (!items) throw new Error('Série não encontrada.');
+        return { id, items };
+      });
+      progress(req.id, `Decodificando ${groups.reduce((n, g) => n + g.items.length, 0)} imagem(ns)…`);
+      const built = groups.map((g) => buildVolume(g.id, g.items));
+      current = built[0];
+      if (built.length > 1) {
+        progress(req.id, `Fundindo ${built.length} séries…`);
+        const fused = fuseVolumes(
+          built.map((b) => b.volume),
+          req.maxVoxels ?? 16e6,
+        );
+        const eff = req.effective ?? ([1, 1, 1] as Vec3);
+        current = {
+          ...built[0],
+          volume: fused.volume,
+          quality: assessFusedQuality(built[0].quality, eff, req.effectiveGap ?? Math.max(...eff), built.length, fused.volume.spacing[0]),
+          fusion: { seriesIds: req.seriesIds, descriptions: built.map((b) => b.series.description), notes: fused.notes },
+        };
+      }
       lastRecon = null;
       // cópia para a thread principal; o worker mantém a original para as reconstruções
       const copy = { ...current, volume: { ...current.volume, data: current.volume.data.slice() } };

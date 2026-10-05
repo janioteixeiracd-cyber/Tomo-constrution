@@ -3,7 +3,7 @@ import { unzipSync } from 'fflate';
 import { assembleVolume, type SliceInput } from './assemble';
 import { cross, dot, normalize } from './math';
 import { assessQuality } from './quality';
-import type { BuiltVolume, SeriesSummary, StudyInfo, Vec3 } from './types';
+import type { BuiltVolume, SeriesGeometry, SeriesSummary, StudyInfo, Vec3 } from './types';
 
 export interface InputFile {
   name: string;
@@ -170,6 +170,49 @@ export function summarizeSeries(id: string, items: ParsedImage[], withThumb = tr
     imageType: (img.getImageType() ?? []).join('\\'),
     transferSyntax: String(img.getTransferSyntax() ?? ''),
     thumbnail: withThumb ? thumbnail(mid, midFrame) : undefined,
+    geometry: seriesGeometry(items),
+  };
+}
+
+/** Normal e caixa envolvente da série no espaço do paciente, só com o cabeçalho (sem decodificar). */
+function seriesGeometry(items: ParsedImage[]): SeriesGeometry | undefined {
+  const img = items[0].image;
+  const o = img.getImageDirections() as number[] | null;
+  const ps = img.getPixelSpacing() as number[] | null;
+  if (!o || o.length !== 6 || !ps) return undefined;
+  const row = normalize([o[0], o[1], o[2]]);
+  const col = normalize([o[3], o[4], o[5]]);
+  const normal = normalize(cross(row, col));
+  const w = img.getCols() * ps[1];
+  const h = img.getRows() * ps[0];
+  const b: SeriesGeometry['bounds'] = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+  const add = (p: number[]) => {
+    for (let a = 0; a < 3; a++) {
+      b[2 * a] = Math.min(b[2 * a], p[a]);
+      b[2 * a + 1] = Math.max(b[2 * a + 1], p[a]);
+    }
+  };
+  let positions = items.map((it) => it.image.getImagePosition() as number[] | null).filter((p): p is number[] => !!p && p.length === 3);
+  if (items.length === 1 && img.getNumberOfFrames() > 1 && positions.length === 1) {
+    const step = tagNumber(img, 0x0018, 0x0088) ?? img.getSliceThickness() ?? 1;
+    const p0 = positions[0];
+    const last = p0.map((v, a) => v + normal[a] * step * (img.getNumberOfFrames() - 1));
+    positions = [p0, last];
+  }
+  if (!positions.length) return undefined;
+  for (const p of positions)
+    for (const [cu, cv] of [
+      [0, 0],
+      [w, 0],
+      [0, h],
+      [w, h],
+    ])
+      add([p[0] + row[0] * cu + col[0] * cv, p[1] + row[1] * cu + col[1] * cv, p[2] + row[2] * cu + col[2] * cv]);
+  return {
+    normal,
+    bounds: b,
+    frameOfReference: tagString(img, 0x0020, 0x0052),
+    colorImages: img.getNumberOfSamplesPerPixel() > 1,
   };
 }
 

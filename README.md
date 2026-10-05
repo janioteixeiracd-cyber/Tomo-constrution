@@ -20,6 +20,16 @@ Toda série é avaliada (espaçamento entre cortes, número de cortes, compress�
 
 Para cortes espessos (> 2 mm) a reconstrução usa **interpolação baseada em forma**: o contorno ósseo de cada corte vira um mapa de distância, e são essas distâncias que se interpolam entre os cortes. O resultado são superfícies contínuas em vez de "degraus". Cortes ausentes são preenchidos e fragmentos soltos (suporte de cabeça, ruído) são removidos.
 
+### Reconstrução planejada a partir das imagens disponíveis
+
+Ao abrir o exame, o app analisa **todas as séries** (orientação, espaçamento, área coberta, referencial espacial) e monta um **plano da reconstrução**, visível na barra lateral:
+
+- **Série volumétrica fina** (≤ 1,5 mm): reconstrução direta com ela.
+- **Só séries espessas, em orientações diferentes** (axial, coronal, sagital da mesma região): **fusão**. Cada série é nítida no próprio plano; em cada ponto prevalece a série cujo corte real passa mais perto. No fantoma de teste, a sobreposição com o objeto real subiu de 71% (uma série) para 88% (três séries).
+- **Uma única série espessa**: interpolação baseada em forma, com aviso.
+
+Os ajustes também saem do exame: o limiar ósseo (HU calibrado ou histograma em CBCT), a interpolação, a suavização e o limiar local de **paredes finas**. Este último fica a meio caminho entre as partes moles daquele exame e o osso, e só vale junto de osso confirmado, para manter assoalho de órbita, paredes de seio e septo sem trazer ruído. Cada escolha aparece com o motivo.
+
 ### Privacidade (LGPD)
 
 Todo o processamento acontece **no navegador**. Nenhum exame é enviado a servidor. Os dados do paciente ficam ocultos por padrão na tela e nos arquivos exportados. Arquivos `.dcm`/`.zip` estão no `.gitignore` para que exames nunca sejam enviados ao repositório.

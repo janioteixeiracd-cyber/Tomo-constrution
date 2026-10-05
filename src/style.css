@@ -820,6 +820,63 @@ input[type='text'] {
   margin-top: 8px;
 }
 
+.plan-strategy {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.plan-list,
+.plan-roles {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: #c9d3e0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.plan-roles {
+  list-style: none;
+  padding-left: 0;
+}
+
+.plan-roles li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.role {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.role.principal {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.role.complementar {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.card h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin: 6px 0 6px;
+}
+
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

@@ -116,3 +116,38 @@ export function assessQuality(q: QualityInput): QualityReport {
 }
 
 export const isCbctVendor = (manufacturer: string) => CBCT_VENDORS.test(manufacturer);
+
+/**
+ * Qualidade de um volume fundido: avalia pela resolução efetiva por eixo (a melhor que alguma série
+ * oferece) e mantém os avisos da série principal que continuam valendo.
+ */
+export function assessFusedQuality(
+  primary: QualityReport,
+  effective: [number, number, number],
+  effectiveGap: number,
+  seriesCount: number,
+  gridMm: number,
+): QualityReport {
+  // avalia pelo espaçamento efetivo realista, não pela melhor resolução de cada eixo
+  const score = effectiveGap <= 1.25 ? 80 : effectiveGap <= 4 ? 60 : 40;
+  const level: QualityLevel = score >= 75 ? 'boa' : score >= 45 ? 'moderada' : 'limitada';
+  const kept = primary.warnings.filter((w) => !/^Espaçamento entre cortes|^Apenas \d+ cortes/.test(w));
+  return {
+    level,
+    score,
+    facts: [
+      { label: 'Séries fundidas', value: String(seriesCount) },
+      { label: 'Grade', value: `${fmt(gridMm)} mm` },
+      { label: 'Espaçamento efetivo', value: `≈ ${fmt(effectiveGap, 1)} mm` },
+      { label: 'Melhor L-R / A-P / S-I', value: effective.map((v) => fmt(v, 1)).join(' / ') + ' mm' },
+    ],
+    warnings: [
+      `Volume montado pela fusão de ${seriesCount} séries em orientações diferentes. O detalhe é máximo onde passam cortes reais de alguma série; longe deles (≈ ${fmt(effectiveGap, 1)} mm em média) a anatomia ainda é estimada.`,
+      ...kept,
+    ],
+    disclaimer:
+      level === 'boa'
+        ? 'Reconstrução gerada pela fusão das séries disponíveis. Confira sempre nos cortes originais.'
+        : 'Reconstrução gerada pela fusão das séries disponíveis, mas os dados de origem ainda não têm todo o detalhe necessário: forma, espessura e medidas podem variar em relação à anatomia real. Confirme nos cortes originais.',
+  };
+}

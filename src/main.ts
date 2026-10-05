@@ -11,6 +11,7 @@ import { dataUrlToBlob, saveFile } from './ui/save';
 import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, SurfaceLayer, View3D, VolumePreset } from './ui/view3d';
 import type { SegmentKey } from './core/segment';
 import { PanoPanel } from './ui/pano-ui';
+import { planReconstruction, type ReconPlan } from './core/plan';
 import { canvasToJpeg, claudeHostSample, describeCase, describeError, type CaseImage } from './ui/ai';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -26,6 +27,8 @@ let currentSeries: string | null = null;
 let reconToken = 0;
 let renderMode: RenderMode = 'superficie';
 let segLayers: SurfaceLayer[] | null = null;
+let plan: ReconPlan | null = null;
+let summariesById = new Map<string, SeriesSummary>();
 const pano = new PanoPanel($('#tab-pano'));
 
 // ---------- abas ----------
@@ -59,7 +62,11 @@ async function readFiles(list: FileList | File[]) {
       ? `${res.skipped.length} arquivo(s) ignorado(s): ${res.skipped[0].name} — ${res.skipped[0].reason}${res.skipped.length > 1 ? '…' : ''}`
       : '';
     if (!res.summaries.length) return status('Nenhuma imagem DICOM encontrada nestes arquivos.', true);
-    if (res.best) await loadSeries(res.best);
+    summariesById = new Map(res.summaries.map((x) => [x.id, x]));
+    plan = planReconstruction(res.summaries);
+    renderPlan();
+    if (plan) await loadPlanned();
+    else if (res.best) await loadSeries([res.best]);
   } catch (e) {
     status(`Erro ao ler os arquivos: ${(e as Error).message}`, true);
   }
@@ -137,23 +144,35 @@ function renderSeries(summaries: SeriesSummary[]) {
     info.querySelector('strong')!.textContent = s.description;
     info.querySelector('small')!.textContent = `${s.modality} · ${s.frameCount} imagem(ns)${spacing ? ` · ${fmt(spacing)} mm` : ''}`;
     btn.append(canvas, info);
-    btn.addEventListener('click', () => loadSeries(s.id));
+    btn.addEventListener('click', () => loadSeries([s.id]));
     li.append(btn);
     list.append(li);
   }
 }
 
-async function loadSeries(id: string) {
-  currentSeries = id;
-  $$('#series-list button').forEach((b) => b.classList.toggle('on', b.dataset.series === id));
-  status('Montando o volume…');
+/** Monta o volume conforme o plano (série única ou fusão, se o usuário mantiver a opção). */
+function loadPlanned() {
+  if (!plan) return Promise.resolve();
+  const fuse = plan.strategy === 'fusion' && $<HTMLInputElement>('#plan-fusion').checked;
+  return loadSeries(fuse ? plan.usedIds : [plan.primaryId], fuse);
+}
+
+async function loadSeries(ids: string[], fused = false) {
+  const key = ids.join('+');
+  currentSeries = key;
+  $$('#series-list button').forEach((b) => b.classList.toggle('on', ids.includes(b.dataset.series!)));
+  status(fused ? `Fundindo ${ids.length} séries…` : 'Montando o volume…');
   try {
-    built = await client.build(id, (m) => status(m));
+    built = await client.build(ids, (m) => status(m), {
+      effective: fused && plan ? plan.effective : undefined,
+      effectiveGap: fused && plan ? plan.effectiveGap : undefined,
+      maxVoxels: Number($<HTMLSelectElement>('#detail').value),
+    });
   } catch (e) {
-    status(`Não foi possível montar esta série: ${(e as Error).message}`, true);
+    status(`Não foi possível montar o volume: ${(e as Error).message}`, true);
     return;
   }
-  if (currentSeries !== id) return;
+  if (currentSeries !== key) return;
   status(null);
   document.body.classList.add('has-volume');
   showQuality(built);
@@ -164,6 +183,46 @@ async function loadSeries(id: string) {
   enableAi();
   runRecon();
 }
+
+const ROLE_NAMES = { principal: 'principal', complementar: 'complementar', ignorada: 'não usada' } as const;
+
+function renderPlan() {
+  const card = $('#plan-card');
+  card.hidden = !plan;
+  if (!plan) return;
+  $('#plan-strategy').textContent =
+    plan.strategy === 'fusion'
+      ? `Fusão de ${plan.usedIds.length} séries complementares`
+      : `Série única: ${summariesById.get(plan.primaryId)?.description ?? ''}`;
+  const list = (sel: string, items: string[]) => {
+    const ul = $(sel);
+    ul.innerHTML = '';
+    for (const t of items) {
+      const li = document.createElement('li');
+      li.textContent = t;
+      ul.append(li);
+    }
+  };
+  list('#plan-rationale', [
+    ...plan.rationale,
+    `Melhor resolução disponível: ${plan.effective.map((v) => fmt(v)).join(' / ')} mm (L-R / A-P / S-I).`,
+  ]);
+  $('#plan-fusion-box').hidden = plan.strategy !== 'fusion';
+  const roles = $('#plan-roles');
+  roles.innerHTML = '';
+  const order = { principal: 0, complementar: 1, ignorada: 2 };
+  for (const r of [...plan.roles].sort((a, b) => order[a.role] - order[b.role])) {
+    const li = document.createElement('li');
+    const badge = document.createElement('span');
+    badge.className = `role ${r.role}`;
+    badge.textContent = ROLE_NAMES[r.role];
+    const txt = document.createElement('span');
+    txt.textContent = `${r.description} — ${r.reason}`;
+    li.append(badge, txt);
+    roles.append(li);
+  }
+}
+$('#plan-fusion').addEventListener('change', () => loadPlanned());
 
 function showQuality(b: BuiltVolume) {
   const q = b.quality;
@@ -283,6 +342,7 @@ function isLikelyPhone() {
   return matchMedia('(max-width: 900px)').matches || (navigator.hardwareConcurrency ?? 8) <= 4;
 }
 if (isLikelyPhone()) $<HTMLSelectElement>('#detail').value = '6000000';
+else if (((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4) >= 8) $<HTMLSelectElement>('#detail').value = '40000000';
 
 function setupReconDefaults(b: BuiltVolume) {
   const cbct = isCbctVendor(b.study.manufacturer);
@@ -290,9 +350,33 @@ function setupReconDefaults(b: BuiltVolume) {
   thresholdInput.min = String(Math.min(-200, t - 500));
   thresholdInput.max = String(Math.max(1500, t + 1500));
   thresholdInput.value = String(t);
-  smoothingInput.value = b.volume.spacing[2] > 3 ? '0.8' : b.volume.spacing[2] > 1.25 ? '0.5' : '0.3';
+  const sz = b.volume.spacing[2];
+  smoothingInput.value = b.fusion ? '0.7' : sz > 3 ? '0.8' : sz > 1.25 ? '0.5' : '0.3';
   updateOutputs();
   reconBtn.disabled = false;
+
+  const detail = $<HTMLSelectElement>('#detail');
+  const settings = [
+    cbct
+      ? `Limiar ósseo ${t}: calculado pelo histograma deste exame (CBCT não usa HU calibrado).`
+      : `Limiar ósseo ${t} HU: TC calibrada (ar ≈ −1000 HU); separa osso cortical e medular das partes moles.`,
+    b.fusion
+      ? `Volume fundido em grade de ${fmt(b.volume.spacing[0])} mm; interpolação cúbica e suavização leve (${smoothingInput.value} mm) para unir as séries sem apagar detalhe.`
+      : sz > 2
+        ? `Cortes de ${fmt(sz)} mm: interpolação baseada em forma (cúbica) e suavização reforçada entre cortes para não formar degraus.`
+        : `Cortes de ${fmt(sz)} mm: interpolação cúbica e suavização leve (${smoothingInput.value} mm), preservando detalhe.`,
+    'Paredes finas preservadas junto do osso (limiar local calculado a partir das partes moles deste exame).',
+    `Qualidade "${detail.selectedOptions[0]?.textContent ?? ''}"${isLikelyPhone() ? ' escolhida para celular; no computador use "Alta" para o máximo de detalhe' : ''}.`,
+  ];
+  const ul = $('#plan-settings');
+  ul.innerHTML = '';
+  for (const t2 of settings) {
+    const li = document.createElement('li');
+    li.textContent = t2;
+    ul.append(li);
+  }
+  $('#plan-card').hidden = false;
+  if (!plan) $('#plan-strategy').textContent = `Série escolhida: ${b.series.description}`;
 }
 
 function reconOptions(b: BuiltVolume): ReconOptions {
@@ -307,6 +391,7 @@ function reconOptions(b: BuiltVolume): ReconOptions {
     interpolation,
     smoothing: Number(smoothingInput.value),
     removeSmallParts: $<HTMLInputElement>('#remove-parts').checked,
+    preserveThinWalls: $<HTMLInputElement>('#thin-walls').checked,
   };
 }
 
@@ -385,7 +470,7 @@ smoothingInput.addEventListener('input', () => {
   updateOutputs();
   markDirty();
 });
-['#interp', '#detail', '#remove-parts'].forEach((s) => $(s).addEventListener('change', markDirty));
+['#interp', '#detail', '#remove-parts', '#thin-walls'].forEach((s) => $(s).addEventListener('change', markDirty));
 
 $$('[data-mode]').forEach((btn) =>
   btn.addEventListener('click', () => {

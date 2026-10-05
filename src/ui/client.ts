@@ -1,7 +1,7 @@
 import type { InputFile } from '../core/dicom';
 import type { Mesh } from '../core/mesh';
 import type { SegmentKey } from '../core/segment';
-import type { BuiltVolume, ReconOptions, SeriesSummary, Volume } from '../core/types';
+import type { BuiltVolume, ReconOptions, SeriesSummary, Vec3, Volume } from '../core/types';
 
 export interface ParseResponse {
   summaries: SeriesSummary[];
@@ -57,8 +57,8 @@ export class ProcessingClient {
     return this.call<ParseResponse>({ type: 'parse', files }, onProgress, files.map((f) => f.buffer));
   }
 
-  build(seriesId: string, onProgress?: (m: string) => void) {
-    return this.call<BuiltVolume>({ type: 'build', seriesId }, onProgress);
+  build(seriesIds: string[], onProgress?: (m: string) => void, extra: { effective?: Vec3; effectiveGap?: number; maxVoxels?: number } = {}) {
+    return this.call<BuiltVolume>({ type: 'build', seriesIds, ...extra }, onProgress);
   }
 
   segment(calibratedHU: boolean, smoothIterations: number, onProgress?: (m: string) => void) {

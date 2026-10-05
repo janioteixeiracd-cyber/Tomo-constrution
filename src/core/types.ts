@@ -28,6 +28,17 @@ export interface SeriesSummary {
   imageType: string;
   transferSyntax: string;
   thumbnail?: { width: number; height: number; pixels: Uint8ClampedArray };
+  /** geometria no espaço do paciente (mm, LPS), quando o cabeçalho permite */
+  geometry?: SeriesGeometry;
+}
+
+export interface SeriesGeometry {
+  /** normal dos cortes (unitária) */
+  normal: Vec3;
+  /** caixa envolvente [xmin, xmax, ymin, ymax, zmin, zmax] */
+  bounds: [number, number, number, number, number, number];
+  frameOfReference: string;
+  colorImages: boolean;
 }
 
 export interface StudyInfo {
@@ -58,6 +69,8 @@ export interface BuiltVolume {
   series: SeriesSummary;
   /** janela sugerida pelo próprio DICOM */
   window: { center: number; width: number } | null;
+  /** quando o volume vem da fusão de várias séries */
+  fusion?: { seriesIds: string[]; descriptions: string[]; notes: string[] };
 }
 
 export type InterpolationMethod = 'linear' | 'cubic' | 'shape';
@@ -72,6 +85,11 @@ export interface ReconOptions {
   smoothing: number;
   /** remove fragmentos pequenos (suporte de cabeça, mesa, ruído) */
   removeSmallParts: boolean;
+  /**
+   * mantém paredes ósseas finas que o volume parcial deixou abaixo do limiar
+   * (assoalho de órbita, paredes de seio, septo), desde que encostadas em osso
+   */
+  preserveThinWalls?: boolean;
 }
 
 export interface ReconResult {
