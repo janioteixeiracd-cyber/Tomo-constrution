@@ -8,7 +8,10 @@ import { ProcessingClient } from './ui/client';
 import { EnhancePanel } from './ui/enhance-ui';
 import { MprState, MprView, type Tool } from './ui/mpr';
 import { dataUrlToBlob, saveFile } from './ui/save';
-import type { CameraView, ClipAxis, RenderMode, View3D, VolumePreset } from './ui/view3d';
+import type { CameraView, ClipAxis, Measurement, MeasureTool, RenderMode, SurfaceLayer, View3D, VolumePreset } from './ui/view3d';
+import type { SegmentKey } from './core/segment';
+import { PanoPanel } from './ui/pano-ui';
+import { canvasToJpeg, claudeHostSample, describeCase, describeError, type CaseImage } from './ui/ai';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const $$ = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
@@ -22,6 +25,8 @@ let lastMesh: Mesh | null = null;
 let currentSeries: string | null = null;
 let reconToken = 0;
 let renderMode: RenderMode = 'superficie';
+let segLayers: SurfaceLayer[] | null = null;
+const pano = new PanoPanel($('#tab-pano'));
 
 // ---------- abas ----------
 function showTab(name: string) {
@@ -29,6 +34,7 @@ function showTab(name: string) {
   $$('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== name));
   if (name === 'cortes') views.forEach((v) => v.draw());
   if (name === 'tresd') view3d?.render();
+  if (name === 'pano') pano.redraw();
 }
 $$('[data-tab]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab!)));
 
@@ -153,7 +159,9 @@ async function loadSeries(id: string) {
   showQuality(built);
   showStudy(built);
   setupMpr(built);
+  pano.setVolume(built.volume);
   setupReconDefaults(built);
+  enableAi();
   runRecon();
 }
 
@@ -305,6 +313,7 @@ async function ensureView3d() {
     const { View3D } = await import('./ui/view3d');
     view3d = new View3D($('#view3d'));
     view3d.setMode(renderMode);
+    view3d.onMeasurementsChange = renderMeasures;
   }
   return view3d;
 }
@@ -327,6 +336,9 @@ async function runRecon() {
     v.setVolume(res.intensity, opts.threshold);
     v.setMesh(res.mesh);
     lastMesh = res.mesh;
+    segLayers = null;
+    $('#layers-card').hidden = true;
+    $<HTMLButtonElement>('#segment-btn').disabled = !res.mesh.triangles.length;
     v.setCamera($<HTMLSelectElement>('#camera-view').value as CameraView);
     $('#view3d-empty').hidden = true;
     $<HTMLButtonElement>('#export-stl').disabled = !res.mesh.triangles.length;
@@ -414,8 +426,312 @@ function reportSave(err: string | null) {
 }
 
 $('#export-stl').addEventListener('click', async () => {
-  if (!lastMesh) return;
-  reportSave(await saveFile(`${baseName()}.stl`, new Blob([meshToStl(lastMesh)], { type: 'model/stl' })));
+  const meshes = segLayers ? segLayers.filter((l) => l.visible).map((l) => l.mesh) : lastMesh ? [lastMesh] : [];
+  if (!meshes.length) return;
+  reportSave(await saveFile(`${baseName()}.stl`, new Blob([meshToStl(mergeMeshes(meshes))], { type: 'model/stl' })));
+});
+
+function mergeMeshes(list: Mesh[]): Mesh {
+  if (list.length === 1) return list[0];
+  const nPts = list.reduce((n, m) => n + m.points.length, 0);
+  const nTri = list.reduce((n, m) => n + m.triangles.length, 0);
+  const points = new Float32Array(nPts);
+  const normals = new Float32Array(nPts);
+  const triangles = new Uint32Array(nTri);
+  let po = 0;
+  let to = 0;
+  for (const m of list) {
+    points.set(m.points, po);
+    normals.set(m.normals, po);
+    const base = po / 3;
+    for (let i = 0; i < m.triangles.length; i++) triangles[to + i] = m.triangles[i] + base;
+    po += m.points.length;
+    to += m.triangles.length;
+  }
+  return { points, normals, triangles };
+}
+
+// ---------- medidas no 3D ----------
+const MEASURE_HINT: Record<MeasureTool, string> = {
+  girar: '',
+  distancia: 'Toque em 2 pontos do osso.',
+  angulo: 'Toque em 3 pontos; o segundo é o vértice do ângulo.',
+  ponto: 'Toque para marcar um ponto de referência.',
+};
+$$('[data-measure]').forEach((btn) =>
+  btn.addEventListener('click', async () => {
+    const tool = btn.dataset.measure as MeasureTool;
+    $$('[data-measure]').forEach((b) => b.classList.toggle('on', b === btn));
+    $('#measure-hint').textContent =
+      tool !== 'girar' && renderMode !== 'superficie' ? 'As medidas funcionam no modo Superfície óssea.' : MEASURE_HINT[tool];
+    const v = await ensureView3d();
+    v.setTool(tool);
+  }),
+);
+
+function renderMeasures(list: Measurement[], pendingCount: number) {
+  const ul = $('#measures-list');
+  ul.innerHTML = '';
+  $('#measures-card').hidden = !list.length && !pendingCount;
+  const names = { distancia: 'Distância', angulo: 'Ângulo', ponto: 'Ponto' } as const;
+  for (const m of list) {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.className = 'grow';
+    span.textContent = `${names[m.kind]}: ${m.label}`;
+    const del = document.createElement('button');
+    del.className = 'ghost small';
+    del.textContent = 'Remover';
+    del.addEventListener('click', () => view3d?.removeMeasurement(m.id));
+    li.append(span, del);
+    ul.append(li);
+  }
+  if (pendingCount) {
+    const li = document.createElement('li');
+    li.innerHTML = '<small></small>';
+    li.querySelector('small')!.textContent = `${pendingCount} ponto(s) marcado(s)… continue tocando no modelo.`;
+    ul.append(li);
+  }
+}
+$('#measures-clear').addEventListener('click', () => view3d?.clearMeasurements());
+
+// ---------- segmentação ----------
+const SEG_STYLE: Record<SegmentKey, { name: string; color: readonly [number, number, number] }> = {
+  cranio: { name: 'Crânio e maxila', color: [0.93, 0.89, 0.8] },
+  mandibula: { name: 'Mandíbula', color: [0.55, 0.75, 0.95] },
+  dentes: { name: 'Dentes / restaurações', color: [1, 0.98, 0.9] },
+};
+
+$('#segment-btn').addEventListener('click', async () => {
+  if (!built) return;
+  const busy = $('#busy3d');
+  busy.hidden = false;
+  const btn = $<HTMLButtonElement>('#segment-btn');
+  btn.disabled = true;
+  try {
+    const res = await client.segment(!isCbctVendor(built.study.manufacturer), Number(smoothingInput.value) > 0 ? 12 : 0, (m) => {
+      busy.querySelector('span')!.textContent = m;
+    });
+    const stats = new Map(res.stats.map((s) => [s.key, s.volumeMm3]));
+    segLayers = res.meshes
+      .filter((m) => m.mesh.triangles.length)
+      .map((m) => ({ key: m.key, name: SEG_STYLE[m.key].name, color: SEG_STYLE[m.key].color, mesh: m.mesh, visible: true }));
+    const v = await ensureView3d();
+    v.setSurfaces(segLayers);
+    renderLayers(stats);
+    const notes = $('#recon-notes');
+    for (const n of res.notes) {
+      const li = document.createElement('li');
+      li.textContent = n;
+      notes.prepend(li);
+    }
+  } catch (e) {
+    reportSave(`Falha na segmentação: ${(e as Error).message}`);
+  } finally {
+    busy.hidden = true;
+    btn.disabled = false;
+  }
+});
+
+function renderLayers(stats: Map<SegmentKey, number>) {
+  const ul = $('#layers-list');
+  ul.innerHTML = '';
+  $('#layers-card').hidden = !segLayers?.length;
+  for (const layer of segLayers ?? []) {
+    const li = document.createElement('li');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = layer.visible;
+    box.id = `layer-${layer.key}`;
+    box.addEventListener('change', () => {
+      layer.visible = box.checked;
+      view3d?.setLayerVisible(layer.key, box.checked);
+    });
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = `rgb(${layer.color.map((c) => Math.round(c * 255)).join(',')})`;
+    const label = document.createElement('label');
+    label.className = 'grow';
+    label.htmlFor = box.id;
+    const vol = stats.get(layer.key as SegmentKey);
+    label.innerHTML = '<span></span> <small></small>';
+    label.querySelector('span')!.textContent = layer.name;
+    label.querySelector('small')!.textContent = vol ? `${fmt(vol / 1000, 1)} cm³` : '';
+    const stl = document.createElement('button');
+    stl.className = 'ghost small';
+    stl.textContent = 'STL';
+    stl.addEventListener('click', async () =>
+      reportSave(await saveFile(`${baseName()}-${layer.key}.stl`, new Blob([meshToStl(layer.mesh)], { type: 'model/stl' }))),
+    );
+    li.append(box, sw, label, stl);
+    ul.append(li);
+  }
+}
+
+// ---------- análise por IA ----------
+const KEY_STORE = 'tomorecon.anthropicKey';
+function readStoredKey() {
+  try {
+    return localStorage.getItem(KEY_STORE) ?? '';
+  } catch {
+    return '';
+  }
+}
+$<HTMLInputElement>('#ia-key').value = readStoredKey();
+$<HTMLInputElement>('#ia-remember').checked = !!readStoredKey();
+claudeHostSample().then((s) => {
+  $('#ia-key-box').hidden = !!s;
+  $('#ia-host-note').hidden = !s;
+});
+
+function enableAi() {
+  $<HTMLButtonElement>('#ia-run').disabled = false;
+  $<HTMLButtonElement>('#ia-preview').disabled = false;
+  $('#ia-status').textContent = 'Escolha as imagens, escreva o contexto e toque em Gerar descrição.';
+}
+
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+async function dataUrlToJpeg(url: string): Promise<Blob> {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  c.getContext('2d')!.drawImage(img, 0, 0);
+  return canvasToJpeg(c);
+}
+
+/** Captura as imagens escolhidas, sempre sem nome do paciente sobreposto. */
+async function collectImages(): Promise<CaseImage[]> {
+  const want = new Set($$<HTMLInputElement>('[data-ia-img]').filter((c) => c.checked).map((c) => c.dataset.iaImg!));
+  const out: CaseImage[] = [];
+  const back = $$('[data-tab]').find((b) => b.getAttribute('aria-selected') === 'true')?.dataset.tab ?? 'ia';
+  const planes = [
+    ['axial', 'Corte axial'],
+    ['coronal', 'Corte coronal'],
+    ['sagittal', 'Corte sagital'],
+  ] as const;
+  if (planes.some(([p]) => want.has(p))) {
+    showTab('cortes');
+    await nextFrame();
+    for (const [plane, label] of planes) {
+      const v = views.find((x) => x.plane === plane);
+      if (!v || !want.has(plane)) continue;
+      const hide = v.hidePatient;
+      v.hidePatient = true;
+      v.draw();
+      out.push({ label: `${label} (janela óssea, cortes de ${fmt(built!.volume.spacing[2])} mm)`, blob: await canvasToJpeg(v.canvas) });
+      v.hidePatient = hide;
+      v.draw();
+    }
+  }
+  if (view3d && lastMesh && (want.has('3d-frontal') || want.has('3d-lateral'))) {
+    showTab('tresd');
+    await nextFrame();
+    const camSel = $<HTMLSelectElement>('#camera-view');
+    for (const [key, cam, label] of [
+      ['3d-frontal', 'frontal', 'Reconstrução 3D óssea, vista frontal'],
+      ['3d-lateral', 'direita', 'Reconstrução 3D óssea, vista lateral direita'],
+    ] as const) {
+      if (!want.has(key)) continue;
+      view3d.setCamera(cam);
+      await nextFrame();
+      out.push({ label, blob: await dataUrlToJpeg(await view3d.snapshot()) });
+    }
+    view3d.setCamera(camSel.value as CameraView);
+  }
+  if (want.has('pano')) {
+    showTab('pano');
+    await nextFrame();
+    pano.redraw();
+    for (const { label, canvas } of pano.snapshotImages()) out.push({ label, blob: await canvasToJpeg(canvas) });
+  }
+  showTab(back);
+  return out;
+}
+
+function technicalSummary(): string {
+  if (!built) return '';
+  const b = built;
+  const lines = [
+    `Modalidade: ${b.series.modality || 'CT'} — região: cabeça e face`,
+    `Aparelho: ${[b.study.manufacturer, b.study.model].filter(Boolean).join(' ') || 'não informado'}`,
+    ...b.quality.facts.map((f) => `${f.label}: ${f.value}`),
+    `Qualidade para 3D: ${b.quality.level}`,
+    ...b.quality.warnings.map((w) => `Aviso: ${w}`),
+    `Limiar ósseo usado no 3D: ${thresholdInput.value} HU`,
+  ];
+  const ms = view3d?.getMeasurements() ?? [];
+  if (ms.length) lines.push(`Medidas feitas no 3D: ${ms.map((m) => m.label).join('; ')}`);
+  return lines.join('\n');
+}
+
+$('#ia-preview').addEventListener('click', async () => {
+  const box = $('#ia-sent');
+  box.hidden = false;
+  box.textContent = 'Capturando imagens…';
+  const imgs = await collectImages();
+  box.innerHTML = '';
+  for (const im of imgs) {
+    const fig = document.createElement('figure');
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(im.blob);
+    img.alt = im.label;
+    const cap = document.createElement('figcaption');
+    cap.textContent = im.label;
+    fig.append(img, cap);
+    box.append(fig);
+  }
+  const pre = document.createElement('pre');
+  pre.textContent = `${technicalSummary()}\n\nContexto: ${$<HTMLTextAreaElement>('#ia-question').value || '(vazio)'}\n\nNenhum nome, ID, data de nascimento ou data do exame é enviado.`;
+  box.append(pre);
+});
+
+let iaAbort: AbortController | null = null;
+$('#ia-stop').addEventListener('click', () => iaAbort?.abort());
+$('#ia-run').addEventListener('click', async () => {
+  if (!built) return;
+  const key = $<HTMLInputElement>('#ia-key').value.trim();
+  try {
+    if ($<HTMLInputElement>('#ia-remember').checked && key) localStorage.setItem(KEY_STORE, key);
+    else localStorage.removeItem(KEY_STORE);
+  } catch {
+    /* armazenamento indisponível: segue sem lembrar */
+  }
+  const run = $<HTMLButtonElement>('#ia-run');
+  const stop = $('#ia-stop');
+  const status = $('#ia-status');
+  const out = $('#ia-text');
+  run.disabled = true;
+  stop.hidden = false;
+  out.textContent = '';
+  status.textContent = 'Capturando imagens anonimizadas…';
+  iaAbort = new AbortController();
+  try {
+    const images = await collectImages();
+    status.textContent = `Enviando ${images.length} imagem(ns). O Claude analisa antes de escrever; pode levar até um minuto…`;
+    const text = await describeCase({
+      images,
+      technical: technicalSummary(),
+      question: $<HTMLTextAreaElement>('#ia-question').value,
+      apiKey: key || undefined,
+      signal: iaAbort.signal,
+      onText: (t) => {
+        status.textContent = 'Escrevendo…';
+        out.textContent = t;
+      },
+    });
+    out.textContent = text;
+    status.textContent = 'Descrição educacional gerada por IA. Confira nas imagens antes de usar no estudo.';
+  } catch (e) {
+    status.textContent = describeError(e);
+  } finally {
+    run.disabled = false;
+    stop.hidden = true;
+    iaAbort = null;
+  }
 });
 $('#export-png').addEventListener('click', async () => {
   if (!view3d) return;

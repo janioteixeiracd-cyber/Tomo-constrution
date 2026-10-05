@@ -9,8 +9,10 @@ Aplicação web para **estudo de casos de cirurgia bucomaxilofacial**: abre tomo
 | Aba | Recursos |
 | --- | --- |
 | **Cortes** | Axial, coronal e sagital sincronizados; janelas Osso, Partes moles, Seios/ar e Dentes/metal; ajuste de janela por arraste; régua em mm; leitura de densidade (HU). |
-| **3D** | Superfície óssea (malha) ou renderização volumétrica (Osso, Osso + pele, Pele); vistas frontal, laterais, superior, inferior e posterior; corte do modelo por plano; exportação **STL** (impressão 3D/planejamento) e PNG. |
+| **3D** | Superfície óssea (malha) ou renderização volumétrica (Osso, Osso + pele, Pele); vistas padrão; corte do modelo por plano; **medidas no modelo** (distância, ângulo, pontos de referência); **segmentação** de crânio/maxila, mandíbula e dentes com STL de cada estrutura; exportação **STL** e PNG. |
+| **Panorâmica** | Toque pontos ao longo do arco no axial para gerar a **panorâmica reconstruída** (média ou MIP, espessura ajustável) e **cortes transversais** com régua para altura e espessura óssea. |
 | **Imagem 2D** | Para radiografias, fotos do negatoscópio e capturas de tela: redução de ruído, contraste local (CLAHE), nitidez, brilho/contraste/gama, negativo, comparação antes/depois e download. |
+| **Análise IA** | Descrição educacional do caso pelo Claude a partir de imagens **anonimizadas** (cortes, 3D, panorâmica) e dados técnicos, com prévia exata do que é enviado. No claude.ai usa a conta do usuário; no site próprio pede uma chave de API da Anthropic. |
 
 ### Reconstrução mesmo com dados limitados
 
@@ -37,18 +39,17 @@ npm test         # testes unitários
 npm run build    # versão de produção em dist/
 ```
 
-O workflow `.github/workflows/pages.yml` publica no GitHub Pages a cada push em `main` (ative em *Settings → Pages → Source: GitHub Actions*).
+Site publicado: https://janioteixeiracd-cyber.github.io/Tomo-constrution/ (branch `gh-pages`, gerado com `npm run build`).
 
 ### Estrutura
 
-- `src/core/`: processamento sem interface (leitura DICOM, montagem do volume, qualidade, interpolação, distância com sinal, componentes conexos, malha/STL, realce 2D), com testes.
+- `src/core/`: processamento sem interface (leitura DICOM, montagem do volume, qualidade, interpolação, distância com sinal, componentes conexos, malha/STL, panorâmica, segmentação, realce 2D), com testes.
 - `src/worker.ts`: processamento pesado em Web Worker.
-- `src/ui/`: cortes (canvas), 3D (vtk.js) e realce 2D.
+- `src/ui/`: cortes (canvas), 3D (vtk.js), panorâmica, realce 2D e análise por IA (SDK da Anthropic).
 - `patches/daikon+1.2.46.patch`: correções no decodificador JPEG de 12 bits (comum em TC): deslocamento de +15 HU nos valores e rejeição de bytes de preenchimento `FF FF` válidos.
 
-## Próximos passos sugeridos
+### Limites conhecidos
 
-- Medidas e marcações direto no modelo 3D.
-- Segmentação automática por IA (mandíbula, maxila, dentes, canal mandibular).
-- Descrição assistida por IA das imagens, com anonimização antes do envio.
-- Panorâmica reconstruída a partir da TC/CBCT (curva da arcada).
+- **Segmentação** é por regras de densidade e forma, não por rede neural treinada. Os dentes são identificados a partir do esmalte e das restaurações (as densidades mais altas). A mandíbula só é separada quando aparece inteira e se destaca do crânio por erosão. O canal mandibular não é segmentado.
+- **Medidas** em exames de cortes espessos herdam a imprecisão da interpolação. O aviso de qualidade indica quando isso acontece.
+- **Análise por IA** é educacional e pode errar. Nenhum nome, ID ou data é enviado, mas o contexto digitado pelo usuário vai junto com as imagens.
