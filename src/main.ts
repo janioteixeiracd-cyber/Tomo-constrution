@@ -466,6 +466,7 @@ async function runRecon() {
       li.textContent = n;
       notes.append(li);
     }
+    if (token === reconToken && res.mesh.triangles.length) void maybeAutoAi();
   } catch (e) {
     $('#recon-notes').innerHTML = '';
     const li = document.createElement('li');
@@ -932,6 +933,19 @@ function readStoredKey() {
   }
 }
 $<HTMLInputElement>('#ia-key').value = readStoredKey();
+const AUTO_STORE = 'tomorecon.autoIa';
+try {
+  $<HTMLInputElement>('#ia-auto').checked = localStorage.getItem(AUTO_STORE) !== '0';
+} catch {
+  /* sem armazenamento: fica ligado */
+}
+$('#ia-auto').addEventListener('change', () => {
+  try {
+    localStorage.setItem(AUTO_STORE, $<HTMLInputElement>('#ia-auto').checked ? '1' : '0');
+  } catch {
+    /* sem armazenamento */
+  }
+});
 $<HTMLInputElement>('#ia-remember').checked = !!readStoredKey();
 claudeHostSample().then((h) => {
   const note = $('#ia-host-note');
@@ -946,13 +960,9 @@ claudeHostSample().then((h) => {
     note.textContent = `Usando o Claude da sua conta do claude.ai, sem chave de API (até ${h.maxImages} imagem(ns) por análise). Na primeira vez, o Claude pede sua autorização.`;
   } else {
     $<HTMLInputElement>('#ia-key').placeholder = 'opcional — sk-ant-…';
-    // Sem imagens neste aparelho: o caminho principal passa a ser o chat do Claude com a montagem.
-    const run = $<HTMLButtonElement>('#ia-run');
-    run.textContent = 'Gerar só com texto (sem imagens)';
-    run.classList.replace('primary', 'ghost');
-    $('#ia-chat').classList.replace('ghost', 'primary');
+    $<HTMLButtonElement>('#ia-run').textContent = 'Gerar descrição (sem imagens)';
     note.textContent =
-      'Neste aparelho o app do Claude não deixa a página enviar imagens: "Gerar só com texto" manda apenas os dados técnicos e o seu contexto, e o Claude não vê os cortes nem o 3D. Para a análise das imagens use "Analisar no chat do Claude (com imagens)", abra no computador ou informe uma chave de API.';
+      'Neste aparelho o app do Claude não deixa a página enviar imagens. A IA recebe a leitura automática do exame inteiro (medidas e achados que o app calcula no DICOM), os dados técnicos e o seu contexto. Para incluir as imagens, use "Analisar no chat do Claude (com imagens)", abra no computador ou informe uma chave de API.';
   }
 });
 
@@ -960,7 +970,9 @@ function enableAi() {
   $<HTMLButtonElement>('#ia-run').disabled = false;
   $<HTMLButtonElement>('#ia-preview').disabled = false;
   $<HTMLButtonElement>('#ia-chat').disabled = false;
-  $('#ia-status').textContent = 'Escolha as imagens, escreva o contexto e toque em Gerar descrição.';
+  $('#ia-status').textContent = $<HTMLInputElement>('#ia-auto').checked
+    ? 'A leitura do exame pela IA começa sozinha assim que o 3D ficar pronto.'
+    : 'Escolha as imagens, escreva o contexto e toque em Gerar descrição.';
 }
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -1064,8 +1076,32 @@ $('#ia-preview').addEventListener('click', async () => {
 
 let iaAbort: AbortController | null = null;
 $('#ia-stop').addEventListener('click', () => iaAbort?.abort());
-$('#ia-run').addEventListener('click', async () => {
-  if (!built) return;
+let findingsText: string | null = null;
+let findingsToken = -1;
+
+/** Leitura automática do exame inteiro (no worker), guardada até a próxima reconstrução. */
+async function getFindings(onStatus: (m: string) => void): Promise<string | null> {
+  if (!built) return null;
+  if (findingsText && findingsToken === reconToken) return findingsText;
+  const token = reconToken;
+  try {
+    const r = await client.analyze(!isCbctVendor(built.study.manufacturer), built.study.contrast, onStatus);
+    if (token !== reconToken) return null;
+    findingsText = r.text;
+    findingsToken = token;
+    renderMarkdown($('#ia-findings'), r.text);
+    $('#ia-findings-box').hidden = false;
+    return r.text;
+  } catch {
+    return null;
+  }
+}
+
+const iaTab = () => $$('[data-tab]').find((b) => b.dataset.tab === 'ia');
+let iaRunning = false;
+
+async function runAi() {
+  if (!built || iaRunning) return;
   const key = $<HTMLInputElement>('#ia-key').value.trim();
   try {
     if ($<HTMLInputElement>('#ia-remember').checked && key) localStorage.setItem(KEY_STORE, key);
@@ -1077,22 +1113,30 @@ $('#ia-run').addEventListener('click', async () => {
   const stop = $('#ia-stop');
   const status = $('#ia-status');
   const out = $('#ia-text');
+  iaRunning = true;
   run.disabled = true;
   stop.hidden = false;
   out.textContent = '';
-  status.textContent = 'Capturando imagens anonimizadas…';
+  iaTab()?.classList.add('pending');
   iaAbort = new AbortController();
   try {
-    const images = await collectImages();
+    status.textContent = 'Lendo o exame inteiro…';
+    const findings = await getFindings((m) => (status.textContent = m));
     const host = await claudeHostSample();
-    const sent = host && (host.maxImages > 0 || !key) ? Math.min(images.length, host.maxImages) : images.length;
-    status.textContent = `${sent ? `Enviando ${sent} imagem(ns)` : 'Enviando só texto (sem imagens)'}${
-      host && (host.maxImages > 0 || !key) ? ' ao Claude da sua conta' : ''
-    }. Se aparecer um pedido de autorização, toque em Permitir. O Claude analisa antes de escrever; pode levar até um minuto…`;
+    const viaHost = !!host && (host.maxImages > 0 || !key);
+    const canImages = viaHost ? host!.maxImages > 0 : !!key;
+    let images: CaseImage[] = [];
+    if (canImages) {
+      status.textContent = 'Capturando imagens anonimizadas…';
+      images = await collectImages();
+    }
+    const sent = viaHost ? Math.min(images.length, host!.maxImages) : images.length;
+    status.textContent = `Enviando a leitura do exame${sent ? ` e ${sent} imagem(ns)` : ''}${viaHost ? ' ao Claude da sua conta' : ''}. Se aparecer um pedido de autorização, toque em Permitir. O Claude analisa antes de escrever; pode levar até um minuto…`;
     const text = await describeCase({
       images,
       technical: technicalSummary(),
       question: $<HTMLTextAreaElement>('#ia-question').value,
+      findings: findings ?? undefined,
       apiKey: key || undefined,
       signal: iaAbort.signal,
       onText: (t) => {
@@ -1101,15 +1145,35 @@ $('#ia-run').addEventListener('click', async () => {
       },
     });
     renderMarkdown(out, text);
-    status.textContent = 'Descrição educacional gerada por IA. Confira nas imagens antes de usar no estudo.';
+    status.textContent = 'Descrição educacional gerada por IA a partir do exame. Confira nos cortes antes de usar no estudo.';
   } catch (e) {
     status.textContent = describeError(e);
   } finally {
+    iaRunning = false;
     run.disabled = false;
     stop.hidden = true;
     iaAbort = null;
+    iaTab()?.classList.remove('pending');
   }
-});
+}
+
+$('#ia-run').addEventListener('click', () => runAi());
+
+/** Depois do 3D pronto: lê o exame com a IA sozinho, se ligado e se houver como chamar o Claude. */
+let autoDoneFor: BuiltVolume | null = null;
+async function maybeAutoAi() {
+  if (!built || autoDoneFor === built || !$<HTMLInputElement>('#ia-auto').checked) return;
+  const host = await claudeHostSample();
+  if (!host && !$<HTMLInputElement>('#ia-key').value.trim()) {
+    $('#ia-status').textContent = 'Para a leitura automática pela IA, informe uma chave de API (fora do claude.ai).';
+    return;
+  }
+  autoDoneFor = built;
+  const s = $('#ia-status');
+  await runAi();
+  if (s.textContent?.startsWith('Descrição')) reportSave('Leitura do exame pela IA pronta: veja a aba Análise IA.');
+}
+
 $('#ia-chat').addEventListener('click', async () => {
   if (!built) return;
   const btn = $<HTMLButtonElement>('#ia-chat');
@@ -1121,7 +1185,9 @@ $('#ia-chat').addEventListener('click', async () => {
   try {
     const images = await collectImages();
     if (!images.length) throw new Error('Marque ao menos uma imagem a enviar.');
-    area.value = chatPrompt({ images, technical: technicalSummary(), question: $<HTMLTextAreaElement>('#ia-question').value });
+    msg.textContent = 'Lendo o exame inteiro…';
+    const findings = await getFindings((m) => (msg.textContent = m));
+    area.value = chatPrompt({ images, technical: technicalSummary(), question: $<HTMLTextAreaElement>('#ia-question').value, findings: findings ?? undefined });
     const blob = await montage(images);
     const img = $<HTMLImageElement>('#ia-chat-img');
     if (img.src) URL.revokeObjectURL(img.src);

@@ -79,6 +79,10 @@ export class ProcessingClient {
     return this.call<SegmentResponse>({ type: 'segment', calibratedHU, smoothIterations, contrast }, onProgress);
   }
 
+  analyze(calibratedHU: boolean, contrast: boolean, onProgress?: (m: string) => void) {
+    return this.call<{ text: string }>({ type: 'analyze', calibratedHU, contrast }, onProgress);
+  }
+
   recon(options: ReconOptions, maxVoxels: number, smoothIterations: number, calibratedHU: boolean, onProgress?: (m: string) => void) {
     return this.call<ReconResponse>({ type: 'recon', options, maxVoxels, smoothIterations, calibratedHU }, onProgress);
   }

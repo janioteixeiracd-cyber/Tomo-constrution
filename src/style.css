@@ -855,6 +855,23 @@ input[type='text'] {
   margin: 14px 0;
 }
 
+.ia-findings {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 12px;
+  background: var(--card);
+}
+
+.ia-findings summary {
+  color: var(--text);
+}
+
+.tabs button.pending::after {
+  content: ' •';
+  color: var(--mid);
+}
+
 .ia-chat {
   display: flex;
   flex-direction: column;

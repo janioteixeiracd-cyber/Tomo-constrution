@@ -11,6 +11,8 @@ export interface DescribeRequest {
   technical: string;
   /** contexto clínico e pergunta escritos pelo usuário */
   question: string;
+  /** leitura automática do exame inteiro (texto) */
+  findings?: string;
   apiKey?: string;
   onText: (text: string) => void;
   signal?: AbortSignal;
@@ -19,16 +21,19 @@ export interface DescribeRequest {
 const MODEL = 'claude-opus-5-5';
 
 export const SYSTEM_PROMPT = `Você apoia o ESTUDO de casos de cirurgia e traumatologia bucomaxilofacial por um cirurgião-dentista e seus alunos.
-Recebe imagens anonimizadas de uma tomografia (cortes, reconstrução 3D e, às vezes, panorâmica reconstruída) e dados técnicos do exame.
+Recebe dados técnicos do exame, uma LEITURA AUTOMÁTICA do exame inteiro (medidas e achados que o app calculou sobre todo o volume DICOM: continuidade e simetria da mandíbula e do esqueleto facial, áreas hipodensas, partes ósseas isoladas, dentes, metal, seios e vias aéreas, com posição em mm) e, quando o aparelho permite, imagens anonimizadas (cortes, reconstrução 3D, panorâmica).
+
+Sobre a leitura automática: vem de regras de densidade e forma, não de um radiologista. Interprete os números em termos anatômicos (ex.: uma área hipodensa a 20 mm abaixo do plano oclusal e 25 mm à direita fica no corpo mandibular direito), diga o que cada achado pode significar e o que é provável artefato do método (limiar, inclinação da cabeça, osso fino, medular de baixa densidade). Ela vale como triagem; nada é confirmado sem os cortes.
 
 Responda em português do Brasil, com estas seções:
+0. Resumo do caso em 3 a 5 linhas: o que chama atenção no exame.
 1. Qualidade e limitações das imagens (espessura de corte, artefatos, cobertura) e como isso afeta a leitura.
 2. Estruturas identificáveis (seios maxilares, órbitas, cavidade nasal, maxila, mandíbula, ATM, dentes, etc.).
 3. Achados observáveis — descreva o que se vê, com localização anatômica; diferencie claramente o que é visível do que é incerto.
 4. Hipóteses a considerar no estudo do caso (não diagnóstico), com o que ajudaria a confirmar ou descartar.
 5. Sugestões de estudo: incidências/cortes adicionais, medidas úteis, pontos para discutir com a turma.
 
-Regras: não invente achados que as imagens não sustentam; quando a resolução não permitir avaliar algo, diga isso.
+Regras: não invente achados que as imagens ou a leitura automática não sustentam; quando a resolução não permitir avaliar algo, diga isso.
 Termine lembrando que a descrição é educacional e não substitui o laudo do radiologista nem o exame clínico.`;
 
 type SampleFn = ((
@@ -70,16 +75,17 @@ async function toBase64(blob: Blob): Promise<string> {
   return btoa(bin);
 }
 
-function userText(req: DescribeRequest) {
-  const list = req.images.map((im, i) => `Imagem ${i + 1}: ${im.label}`).join('\n');
-  return `Imagens enviadas (na ordem):\n${list}\n\nDados técnicos do exame:\n${req.technical}\n\nContexto e pergunta do usuário:\n${
+function userText(req: Pick<DescribeRequest, 'images' | 'technical' | 'question' | 'findings'>) {
+  const list = req.images.length ? req.images.map((im, i) => `Imagem ${i + 1}: ${im.label}`).join('\n') : '(nenhuma)';
+  const auto = req.findings ? `\n\nLeitura automática do exame inteiro (calculada pelo app sobre o DICOM):\n${req.findings}` : '';
+  return `Imagens enviadas (na ordem):\n${list}\n\nDados técnicos do exame:\n${req.technical}${auto}\n\nContexto e pergunta do usuário:\n${
     req.question.trim() || '(nenhum — faça a descrição geral)'
   }`;
 }
 
 /** Texto para colar no chat do Claude junto com a montagem das imagens (uma única imagem numerada). */
-export function chatPrompt(req: Pick<DescribeRequest, 'images' | 'technical' | 'question'>): string {
-  return `${SYSTEM_PROMPT}\n\nAs imagens vêm numa única montagem anexada, cada quadro numerado na ordem abaixo.\n\n${userText(req as DescribeRequest)}`;
+export function chatPrompt(req: Pick<DescribeRequest, 'images' | 'technical' | 'question' | 'findings'>): string {
+  return `${SYSTEM_PROMPT}\n\nAs imagens vêm numa única montagem anexada, cada quadro numerado na ordem abaixo.\n\n${userText(req)}`;
 }
 
 /** Junta as imagens numa montagem JPEG numerada (para anexar no chat do Claude). */
@@ -126,7 +132,7 @@ export async function describeCase(req: DescribeRequest): Promise<string> {
     if (left.length) {
       prompt += `\n\nAtenção: ${images.length ? 'apenas as imagens listadas acima foram anexadas' : 'nenhuma imagem pôde ser anexada neste aparelho'}; não foram enviadas: ${left
         .map((i) => i.label)
-        .join(', ')}. Baseie-se só no que recebeu e diga claramente o que não pôde ser avaliado sem as imagens.`;
+        .join(', ')}. ${req.findings ? 'Interprete a leitura automática do exame inteiro como base principal' : 'Baseie-se só no que recebeu'} e diga claramente o que só as imagens confirmariam.`;
     }
     const res = await host.sample(prompt, {
       ...(images.length ? { images: images.map((i) => i.blob) } : {}),
