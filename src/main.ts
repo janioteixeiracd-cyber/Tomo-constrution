@@ -932,9 +932,22 @@ function readStoredKey() {
 }
 $<HTMLInputElement>('#ia-key').value = readStoredKey();
 $<HTMLInputElement>('#ia-remember').checked = !!readStoredKey();
-claudeHostSample().then((s) => {
-  $('#ia-key-box').hidden = !!s;
-  $('#ia-host-note').hidden = !s;
+claudeHostSample().then((h) => {
+  const note = $('#ia-host-note');
+  if (!h) {
+    note.hidden = false;
+    note.textContent = 'Fora do claude.ai (ou sem permissão do Claude nesta página): informe uma chave de API da Anthropic.';
+    return;
+  }
+  note.hidden = false;
+  if (h.maxImages > 0) {
+    $('#ia-key-box').hidden = true;
+    note.textContent = `Usando o Claude da sua conta do claude.ai, sem chave de API (até ${h.maxImages} imagem(ns) por análise). Na primeira vez, o Claude pede sua autorização.`;
+  } else {
+    $<HTMLInputElement>('#ia-key').placeholder = 'opcional — sk-ant-…';
+    note.textContent =
+      'Usando o Claude da sua conta do claude.ai, sem chave. Neste aparelho ele recebe só texto (dados técnicos e o seu contexto), sem as imagens. Para analisar as imagens, abra no computador ou informe uma chave de API.';
+  }
 });
 
 function enableAi() {
@@ -1064,7 +1077,11 @@ $('#ia-run').addEventListener('click', async () => {
   iaAbort = new AbortController();
   try {
     const images = await collectImages();
-    status.textContent = `Enviando ${images.length} imagem(ns). O Claude analisa antes de escrever; pode levar até um minuto…`;
+    const host = await claudeHostSample();
+    const sent = host && (host.maxImages > 0 || !key) ? Math.min(images.length, host.maxImages) : images.length;
+    status.textContent = `${sent ? `Enviando ${sent} imagem(ns)` : 'Enviando só texto (sem imagens)'}${
+      host && (host.maxImages > 0 || !key) ? ' ao Claude da sua conta' : ''
+    }. Se aparecer um pedido de autorização, toque em Permitir. O Claude analisa antes de escrever; pode levar até um minuto…`;
     const text = await describeCase({
       images,
       technical: technicalSummary(),

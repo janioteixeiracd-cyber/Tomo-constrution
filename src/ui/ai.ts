@@ -36,15 +36,27 @@ type SampleFn = ((
   opts?: { images?: Blob[]; onText?: (p: { text: string }) => void; signal?: AbortSignal; modelTier?: 'quick' | 'default' | 'complex'; cache?: boolean },
 ) => Promise<{ text: string; truncated: boolean }>) & { limits(): Promise<{ images?: { maxCount: number; mediaTypes: string[] } }> };
 
-let hostSample: Promise<SampleFn | null> | null = null;
+export interface HostClaude {
+  sample: SampleFn;
+  /** máximo de imagens por chamada neste aparelho (0 = só texto) */
+  maxImages: number;
+}
+
+let hostSample: Promise<HostClaude | null> | null = null;
 
 /** Claude do próprio claude.ai, quando o app roda publicado lá (sem chave de API). */
-export function claudeHostSample(): Promise<SampleFn | null> {
+export function claudeHostSample(): Promise<HostClaude | null> {
   if (!hostSample) {
     const host = (window as unknown as { claude?: { use?: (n: string) => Promise<unknown> } }).claude;
     hostSample = host?.use
       ? (host.use('sample') as Promise<SampleFn | null>)
-          .then(async (s) => (s && (await s.limits().catch(() => null))?.images ? s : null))
+          .then(async (s) => {
+            if (!s) return null;
+            const lim = await s.limits().catch(() => null);
+            const img = lim?.images;
+            const jpeg = !!img && img.mediaTypes.some((t) => t === 'image/jpeg' || t === 'image/*');
+            return { sample: s, maxImages: jpeg ? img!.maxCount : 0 };
+          })
           .catch(() => null)
       : Promise.resolve(null);
   }
@@ -67,10 +79,19 @@ function userText(req: DescribeRequest) {
 
 /** Descreve o caso com o Claude. Usa o Claude do claude.ai quando disponível; senão, a chave de API informada. */
 export async function describeCase(req: DescribeRequest): Promise<string> {
-  const sample = await claudeHostSample();
-  if (sample) {
-    const res = await sample(`${SYSTEM_PROMPT}\n\n${userText(req)}`, {
-      images: req.images.map((i) => i.blob),
+  const host = await claudeHostSample();
+  // Conta do claude.ai: com imagens quando o aparelho permite; só texto apenas se não houver chave.
+  if (host && (host.maxImages > 0 || !req.apiKey)) {
+    const images = req.images.slice(0, host.maxImages);
+    const left = req.images.slice(images.length);
+    let prompt = `${SYSTEM_PROMPT}\n\n${userText({ ...req, images })}`;
+    if (left.length) {
+      prompt += `\n\nAtenção: ${images.length ? 'apenas as imagens listadas acima foram anexadas' : 'nenhuma imagem pôde ser anexada neste aparelho'}; não foram enviadas: ${left
+        .map((i) => i.label)
+        .join(', ')}. Baseie-se só no que recebeu e diga claramente o que não pôde ser avaliado sem as imagens.`;
+    }
+    const res = await host.sample(prompt, {
+      ...(images.length ? { images: images.map((i) => i.blob) } : {}),
       onText: ({ text }) => req.onText(text),
       signal: req.signal,
       modelTier: 'complex',
@@ -121,6 +142,8 @@ export function describeError(e: unknown): string {
   if (code === 'not_granted') return 'Uso do Claude não autorizado nesta página.';
   if (code === 'cancelled') return 'Descrição interrompida.';
   if (code === 'rate_limited') return 'Muitas solicitações seguidas. Aguarde um pouco.';
+  if (code === 'images_unavailable' || code === 'image_rejected') return 'Este aparelho não conseguiu enviar as imagens ao Claude. Desmarque as imagens ou use o computador.';
+  if (code) return `O Claude não respondeu (${code}): ${(e as { message?: string }).message ?? ''}`;
   return e instanceof Error ? e.message : String(e);
 }
 
